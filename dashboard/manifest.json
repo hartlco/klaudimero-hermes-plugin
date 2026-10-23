@@ -1,0 +1,10 @@
+{
+  "name": "klaudimero",
+  "label": "Klaudimero",
+  "description": "Bot icons and notification registration for the Klaudimero app.",
+  "icon": "Bird",
+  "version": "0.1.0",
+  "tab": {"path": "/klaudimero", "position": "end", "hidden": true},
+  "entry": "index.js",
+  "api": "plugin_api.py"
+}

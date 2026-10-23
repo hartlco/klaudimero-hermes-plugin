@@ -1,0 +1,22 @@
+services:
+  klaudimero-push:
+    build:
+      context: ..
+      dockerfile: relay/Dockerfile
+    restart: unless-stopped
+    ports: ["127.0.0.1:8081:8080"]
+    environment:
+      APNS_KEY_FILE: /run/secrets/apns.p8
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      APNS_TOPIC: co.hartl.HermesApple
+      KLAUDIMERO_RELAY_CLIENTS: ${KLAUDIMERO_RELAY_CLIENTS:-{}}
+    volumes:
+      - relay-data:/data
+    secrets: [apns]
+secrets:
+  apns:
+    file: ${APNS_KEY_PATH:-./AuthKey.p8}
+volumes:
+  relay-data:
+

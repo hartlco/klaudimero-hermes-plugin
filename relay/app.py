@@ -1,0 +1,153 @@
+"""A small, authenticated, self-hostable relay. Generic alerts only."""
+from contextlib import contextmanager
+from pathlib import Path
+import hashlib
+import hmac
+import json
+import os
+import sqlite3
+import threading
+import time
+import uuid
+from typing import Literal
+
+import httpx
+import jwt
+from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class Push(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    event_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    device_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+    device_token: str = Field(min_length=32, max_length=512, pattern=r"^[0-9a-f]+$")
+    environment: Literal["sandbox", "production"]
+    kind: Literal["reply_ready", "session_failed", "test"]
+    server_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+    profile_id: str = Field(min_length=1, max_length=180)
+    session_id: str = Field(min_length=1, max_length=180)
+
+
+class APNs:
+    def __init__(self):
+        self.key_path = os.environ.get("APNS_KEY_FILE", "")
+        self.key_id = os.environ.get("APNS_KEY_ID", "")
+        self.team_id = os.environ.get("APNS_TEAM_ID", "")
+        self.topic = os.environ.get("APNS_TOPIC", "co.hartl.HermesApple")
+        self.jwt = None
+        self.issued_at = 0
+        self.lock = threading.Lock()
+        self.client = httpx.Client(http2=True, timeout=15, follow_redirects=False)
+
+    @property
+    def ready(self):
+        return bool(self.key_id and self.team_id and self.key_path and Path(self.key_path).is_file())
+
+    def token(self):
+        with self.lock:
+            if self.jwt is None or time.time() - self.issued_at > 40 * 60:
+                self.issued_at = int(time.time())
+                self.jwt = jwt.encode({"iss": self.team_id, "iat": self.issued_at}, Path(self.key_path).read_text(),
+                                      algorithm="ES256", headers={"kid": self.key_id})
+            return self.jwt
+
+    def send(self, push):
+        host = "api.sandbox.push.apple.com" if push.environment == "sandbox" else "api.push.apple.com"
+        text = {"reply_ready": "Your agent has a new reply.", "session_failed": "Your agent needs your attention.",
+                "test": "Klaudimero notifications are connected."}[push.kind]
+        payload = {"aps": {"alert": {"title": "Klaudimero", "body": text}, "sound": "default",
+                            "thread-id": hashlib.sha256((str(push.device_id) + push.profile_id + push.session_id).encode()).hexdigest()},
+                   "klaudimero": {"protocol": 1, "server_id": str(push.server_id), "device_id": str(push.device_id),
+                                  "profile_id": push.profile_id, "session_id": push.session_id, "event_id": push.event_id,
+                                  "kind": push.kind}}
+        return self.client.post(f"https://{host}/3/device/{push.device_token}", json=payload, headers={
+            "authorization": "bearer " + self.token(), "apns-topic": self.topic, "apns-push-type": "alert",
+            "apns-priority": "10", "apns-expiration": str(int(time.time()) + 3600),
+            "apns-id": str(uuid.uuid5(uuid.NAMESPACE_URL, push.event_id)), "apns-collapse-id": push.event_id})
+
+
+def create_app(provider=None, *, directory=None, clients=None):
+    app = FastAPI(title="Klaudimero push relay", docs_url=None, redoc_url=None, openapi_url=None)
+    provider = provider or APNs()
+    clients = clients if clients is not None else json.loads(os.environ.get("KLAUDIMERO_RELAY_CLIENTS", "{}"))
+    # One operator-issued credential per Hermes server; no key is compiled into the app/plugin.
+    if not isinstance(clients, dict) or any(not isinstance(k, str) or not isinstance(v, str) or len(v) < 32 for k, v in clients.items()):
+        raise ValueError("Relay clients must map installation names to credentials of at least 32 characters")
+    root = Path(directory or os.environ.get("KLAUDIMERO_RELAY_DATA", "/data"))
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = root / "delivery.sqlite3"
+    if path.is_symlink():
+        raise ValueError("Unsafe relay data path")
+
+    @contextmanager
+    def database():
+        with sqlite3.connect(path, timeout=10) as db:
+            yield db
+
+    with database() as db:
+        db.execute("CREATE TABLE IF NOT EXISTS deliveries (host TEXT,event TEXT,digest TEXT,state TEXT,lease REAL,created REAL,PRIMARY KEY(host,event))")
+        db.execute("CREATE TABLE IF NOT EXISTS limits (host TEXT,window INTEGER,count INTEGER,PRIMARY KEY(host,window))")
+    os.chmod(path, 0o600)
+
+    def authenticate(authorization: str = Header(default="")):
+        supplied = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
+        for host, credential in clients.items():
+            if hmac.compare_digest(hashlib.sha256(supplied.encode()).digest(), hashlib.sha256(credential.encode()).digest()):
+                return host
+        raise HTTPException(401, detail="Unauthorized")
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request, exc):
+        return JSONResponse({"detail": "invalid_request"}, status_code=422)
+
+    @app.get("/v1/status")
+    def status(host=Depends(authenticate)):
+        return {"protocol": 1, "apns_ready": provider.ready}
+
+    @app.post("/v1/push")
+    def deliver(push: Push, host=Depends(authenticate)):
+        if not provider.ready:
+            raise HTTPException(503, detail="apns_not_configured")
+        serialized = push.model_dump_json()
+        digest = hashlib.sha256(serialized.encode()).hexdigest()
+        now = time.time()
+        with database() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT digest,state,lease FROM deliveries WHERE host=? AND event=?", (host, push.event_id)).fetchone()
+            if row and row[0] != digest:
+                raise HTTPException(409, detail="event_id_reused")
+            if row and row[1] == "sent":
+                return {"accepted": True, "duplicate": True}
+            if row and row[2] > now:
+                raise HTTPException(503, detail="delivery_pending", headers={"Retry-After": "30"})
+            window = int(now // 60)
+            db.execute("DELETE FROM limits WHERE window<?", (window - 2,))
+            db.execute("INSERT INTO limits VALUES (?,?,1) ON CONFLICT(host,window) DO UPDATE SET count=count+1", (host, window))
+            if db.execute("SELECT count FROM limits WHERE host=? AND window=?", (host, window)).fetchone()[0] > 120:
+                raise HTTPException(429, detail="rate_limited", headers={"Retry-After": "60"})
+            db.execute("INSERT OR REPLACE INTO deliveries VALUES (?,?,?,?,?,?)", (host, push.event_id, digest, "sending", now + 60, now))
+        try:
+            response = provider.send(push)
+        except Exception:
+            # Preserve the delivery lease after an ambiguous response. Retrying uses
+            # the same APNs id/collapse id; do not claim exactly-once device delivery.
+            raise HTTPException(503, detail="delivery_uncertain") from None
+        if response.status_code == 200:
+            with database() as db:
+                db.execute("UPDATE deliveries SET state='sent',lease=0 WHERE host=? AND event=?", (host, push.event_id))
+            return {"accepted": True}
+        try:
+            reason = response.json().get("reason", "")
+        except (ValueError, AttributeError):
+            reason = ""
+        if response.status_code == 410 or reason in {"BadDeviceToken", "DeviceTokenNotForTopic", "Unregistered"}:
+            raise HTTPException(410, detail="invalid_device")
+        with database() as db:
+            db.execute("UPDATE deliveries SET lease=0 WHERE host=? AND event=?", (host, push.event_id))
+        raise HTTPException(503, detail="apns_rejected")
+
+    return app
+
