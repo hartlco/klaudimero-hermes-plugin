@@ -1,0 +1,20 @@
+{
+  "linux/amd64": {
+    "automatic_without_shared_password": true,
+    "encrypted_apns_proof_required": true,
+    "signed_host_grant_verified": true,
+    "deduplicated": true,
+    "revocation_blocks_delivery": true,
+    "revoked_grant_cannot_be_reused": true,
+    "real_apns_used": false
+  },
+  "linux/arm64": {
+    "automatic_without_shared_password": true,
+    "encrypted_apns_proof_required": true,
+    "signed_host_grant_verified": true,
+    "deduplicated": true,
+    "revocation_blocks_delivery": true,
+    "revoked_grant_cannot_be_reused": true,
+    "real_apns_used": false
+  }
+}

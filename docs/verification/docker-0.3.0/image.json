@@ -1,0 +1,10 @@
+{
+  "image": "ghcr.io/hartlco/klaudimero-push-relay:0.3.0",
+  "source": "8c24d01882b6b4f26080147aea3d19a50fe1302f",
+  "digest": "sha256:8cb20157f0ae3654cf742e2e3188721fc4f3576b5648a0b5fb9a853e1ef3aac9",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "real_apns_delivery_tested": false
+}
