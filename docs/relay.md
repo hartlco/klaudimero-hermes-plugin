@@ -10,7 +10,7 @@ Klaudimero ── authenticated dashboard ── Hermes plugin
                                       private .p8 key
 ```
 
-BigHelp's managed setup similarly keeps its provider sending credentials in its notification service rather than on the Hermes host: [its primary notification documentation](https://github.com/promptclickrun/bighelp-plugin/blob/main/docs/NOTIFICATIONS.md). It additionally ships a legacy direct APNs provider. This implementation uses its own generic-payload relay contract; it does not call BigHelp/Cadu services or reuse their keys. Cadu's public plugin key handling was not independently verified.
+BigHelp's managed setup similarly keeps its provider sending credentials in its notification service rather than on the Hermes host: [its primary notification documentation](https://github.com/promptclickrun/bighelp-plugin/blob/main/docs/NOTIFICATIONS.md). It additionally ships a legacy direct APNs provider. This implementation uses its own encrypted-payload relay contract; it does not call BigHelp/Cadu services or reuse their keys. Cadu's public plugin key handling was not independently verified.
 
 ## Configure the relay when ready
 
@@ -51,7 +51,7 @@ The credential belongs to this relay installation. **It is not an Apple key**, a
 
 ## Delivery semantics and operations
 
-The relay provides `/v1/status` and `/v1/push`, both requiring the host credential. It accepts only a fixed event kind and routing fields, caps a host at 120 new deliveries/minute, and persists a claim before calling Apple. Repeated settled events are no-ops. Reusing an ID with different data is rejected. Unknown network outcomes retain a lease before retry; the same APNs ID/collapse ID is reused, but this does not promise exactly-once display on a phone. Invalid tokens return 410 for plugin removal.
+The relay provides `/v1/status` and `/v1/push`, both requiring the host credential. It accepts only a v2 opaque encrypted envelope, APNs token/environment and stable event ID, caps a host at 120 new deliveries/minute, and persists a claim before calling Apple. Repeated settled events are no-ops. Reusing an ID with different data is rejected. Unknown network outcomes retain a lease before retry; the same APNs ID/collapse ID is reused, but this does not promise exactly-once display on a phone. Invalid tokens return 410 for plugin removal.
 
-No chat content passes through this service. Apple accepts only tokens for the app's signed team/topic/environment; a key for another app cannot deliver to Klaudimero. Validate a real physical-device push after configuring the production relay. Synthetic-key tests verify packet signing and routing, not Apple's acceptance of a real deployment.
+No plaintext event kind, chat routing or chat content passes through this service. The relay has no decryption or Hermes signing keys. The APNs fallback is generic; local notification service extensions decrypt and authenticate the event. See [the encrypted format](encrypted-push.md). Apple accepts only tokens for the app's signed team/topic/environment; a key for another app cannot deliver to Klaudimero. Validate a real physical-device push after configuring the production relay. Synthetic-key tests verify packet signing and routing, not Apple's acceptance of a real deployment.
 

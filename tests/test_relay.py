@@ -1,3 +1,4 @@
+import base64
 import json
 import uuid
 import pytest
@@ -20,9 +21,9 @@ class Provider:
 
 @pytest.fixture
 def payload():
-    return {"event_id": "a" * 64, "device_id": str(uuid.uuid4()), "device_token": "b" * 64,
-            "environment": "production", "kind": "reply_ready", "server_id": str(uuid.uuid4()),
-            "profile_id": "developer", "session_id": "chat"}
+    return {"event_id": "a" * 64, "device_token": "b" * 64, "environment": "production",
+            "encrypted": {"version": 2, "key_id": "c" * 64, "event_id": "a" * 64,
+                          "ciphertext": base64.b64encode(b"synthetic ciphertext" * 10).decode()}}
 
 
 def test_relay_authenticated_idempotent_and_has_no_content_api(tmp_path, payload):
@@ -35,7 +36,7 @@ def test_relay_authenticated_idempotent_and_has_no_content_api(tmp_path, payload
         assert client.post("/v1/push", json=payload).json()["duplicate"]
         assert len(provider.calls) == 1
         assert client.post("/v1/push", json={**payload, "title": "Arbitrary spam is forbidden"}).status_code == 422
-        assert client.post("/v1/push", json={**payload, "session_id": "other"}).status_code == 409
+        assert client.post("/v1/push", json={**payload, "encrypted": {**payload["encrypted"], "ciphertext": base64.b64encode(b"different bytes" * 10).decode()}}).status_code == 409
 
 
 def test_missing_apple_key_is_an_honest_not_ready_state(tmp_path, payload):
@@ -66,9 +67,12 @@ def test_apns_packet_is_generic_and_correctly_signed(tmp_path, monkeypatch, payl
     signed = headers["authorization"].split(" ")[1]
     assert jwt.decode(signed, key.public_key(), algorithms=["ES256"])["iss"] == "TEAM123456"
     packet = provider.client.kwargs["json"]
-    assert packet["aps"]["alert"]["body"] == "Your agent has a new reply."
-    assert packet["klaudimero"]["device_id"] == payload["device_id"]
+    assert "encrypted notification" in packet["aps"]["alert"]["body"]
+    assert packet["aps"]["mutable-content"] == 1
+    assert packet["klaudimero_encrypted"] == payload["encrypted"]
+    assert "profile_id" not in json.dumps(packet) and "kind" not in json.dumps(packet)
     assert "appearance" not in json.dumps(packet) and "device_token" not in json.dumps(packet)
+    assert len(json.dumps(packet).encode()) < 4096
     payload["environment"] = "sandbox"
     provider.send(Push(**payload))
     assert provider.client.url.startswith("https://api.sandbox.push.apple.com/")
@@ -79,4 +83,14 @@ def test_invalid_device_can_be_removed_without_retrying_forever(tmp_path, payloa
     with TestClient(create_app(provider, directory=tmp_path, clients={"host": "k" * 32})) as client:
         client.headers["Authorization"] = "Bearer " + "k" * 32
         assert client.post("/v1/push", json=payload).status_code == 410
+
+
+def test_plaintext_routes_and_mismatched_envelope_are_rejected(tmp_path, payload):
+    provider = Provider()
+    with TestClient(create_app(provider, directory=tmp_path, clients={"host": "k" * 32})) as client:
+        client.headers["Authorization"] = "Bearer " + "k" * 32
+        for body in [{**payload, "kind": "reply_ready"}, {**payload, "session_id": "private"},
+                     {**payload, "event_id": "f" * 64}, {**payload, "encrypted": {**payload["encrypted"], "version": 1}}]:
+            assert client.post("/v1/push", json=body).status_code == 422
+        assert provider.calls == []
 

@@ -1,3 +1,5 @@
+import base64
+from cryptography.hazmat.primitives.asymmetric import x25519
 import concurrent.futures
 import json
 import uuid
@@ -5,6 +7,8 @@ import pytest
 from klaudimero_plugin.contracts import appearance, Problem
 from klaudimero_plugin.hooks import normalize, register
 from klaudimero_plugin.storage import Store
+
+PUBLIC_KEY = base64.b64encode(x25519.X25519PrivateKey.generate().public_key().public_bytes_raw()).decode()
 
 BASE = "/api/plugins/klaudimero"
 
@@ -82,7 +86,7 @@ def test_photo_and_symbol_roundtrip(client, avatar):
 
 def test_registration_token_rotation_account_isolation_and_revocation(client, tmp_path):
     device = str(uuid.uuid4())
-    data = {"device_token": "a" * 64, "environment": "sandbox", "sessions": [{"profile_id": "developer", "session_id": "chat"}]}
+    data = {"device_token": "a" * 64, "environment": "sandbox", "sessions": [{"profile_id": "developer", "session_id": "chat"}], "encryption": {"version": 2, "public_key": PUBLIC_KEY}}
     assert client.put(BASE + "/devices/" + device, json=data).status_code == 200
     data["device_token"] = "b" * 64
     assert client.put(BASE + "/devices/" + device, json=data).status_code == 200
@@ -107,7 +111,7 @@ def test_registration_token_rotation_account_isolation_and_revocation(client, tm
 
 def test_repeated_hooks_are_deduplicated_and_subagents_are_quiet(tmp_path):
     store = Store(tmp_path)
-    store.register_device("owner", str(uuid.uuid4()), "a" * 64, "production", [{"profile_id": "default", "session_id": "chat"}])
+    store.register_device("owner", str(uuid.uuid4()), "a" * 64, "production", [{"profile_id": "default", "session_id": "chat"}], PUBLIC_KEY)
     event = normalize("default", {"session_id": "chat", "turn_id": "turn", "completed": True})
     store.enqueue(*event); store.enqueue(*event)
     row = store.claim(); assert row is not None
@@ -120,7 +124,7 @@ def test_repeated_hooks_are_deduplicated_and_subagents_are_quiet(tmp_path):
 
 def test_outbox_claim_excludes_another_worker_and_retries_same_id(tmp_path):
     store = Store(tmp_path)
-    store.register_device("owner", str(uuid.uuid4()), "a" * 64, "production", [{"profile_id": "default", "session_id": "chat"}])
+    store.register_device("owner", str(uuid.uuid4()), "a" * 64, "production", [{"profile_id": "default", "session_id": "chat"}], PUBLIC_KEY)
     store.enqueue("default", "chat", "turn", "reply_ready")
     first = store.claim()
     assert first and store.claim() is None
@@ -147,10 +151,10 @@ def test_old_token_failure_cannot_revoke_rotated_registration(tmp_path):
     store = Store(tmp_path)
     device = str(uuid.uuid4())
     sessions = [{"profile_id": "default", "session_id": "chat"}]
-    store.register_device("owner", device, "a" * 64, "sandbox", sessions)
+    store.register_device("owner", device, "a" * 64, "sandbox", sessions, PUBLIC_KEY)
     store.enqueue("default", "chat", "old-turn", "reply_ready")
     old = store.claim()
-    store.register_device("owner", device, "b" * 64, "production", sessions)
+    store.register_device("owner", device, "b" * 64, "production", sessions, PUBLIC_KEY)
     store.settle(old["id"], drop_device=True)
     store.settle(old["id"], retry=True)
     assert store.claim() is None

@@ -7,6 +7,7 @@ import os
 import sqlite3
 import time
 import uuid
+import base64
 
 from .contracts import Problem
 
@@ -43,6 +44,12 @@ class Store:
                     next_attempt REAL NOT NULL DEFAULT 0, lease REAL NOT NULL DEFAULT 0);
             """)
             db.execute("INSERT OR IGNORE INTO metadata VALUES ('server_id',?)", (str(uuid.uuid4()),))
+            if "encryption_key" not in {r[1] for r in db.execute("PRAGMA table_info(devices)")}:
+                db.execute("ALTER TABLE devices ADD COLUMN encryption_key TEXT")
+            if not db.execute("SELECT 1 FROM metadata WHERE key='encrypted_push_v2'").fetchone():
+                # Never replay plaintext events left by the previous release.
+                db.execute("UPDATE outbox SET payload='{}',next_attempt=1e30,lease=0")
+                db.execute("INSERT INTO metadata VALUES ('encrypted_push_v2','1')")
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -63,6 +70,20 @@ class Store:
     def server_id(self):
         with self.connection() as db:
             return db.execute("SELECT value FROM metadata WHERE key='server_id'").fetchone()[0]
+
+    def push_signing_key(self):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        with self.connection() as db:
+            row = db.execute("SELECT value FROM metadata WHERE key='push_signing_key'").fetchone()
+            if row is None:
+                candidate = Ed25519PrivateKey.generate().private_bytes_raw().hex()
+                db.execute("INSERT OR IGNORE INTO metadata VALUES ('push_signing_key',?)", (candidate,))
+                row = db.execute("SELECT value FROM metadata WHERE key='push_signing_key'").fetchone()
+            return Ed25519PrivateKey.from_private_bytes(bytes.fromhex(row[0]))
+
+    @property
+    def push_signing_public_key(self):
+        return base64.b64encode(self.push_signing_key().public_key().public_bytes_raw()).decode()
 
     def avatars(self, owner):
         with self.connection() as db:
@@ -94,18 +115,18 @@ class Store:
             db.execute("INSERT INTO receipts VALUES (?,?,?,?)", (owner, request, digest, json.dumps(result)))
             return result
 
-    def register_device(self, owner, device, token, environment, sessions):
+    def register_device(self, owner, device, token, environment, sessions, encryption_key=None):
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            existing = db.execute("SELECT token,environment FROM devices WHERE owner=? AND id=?", (owner, device)).fetchone()
+            existing = db.execute("SELECT token,environment,encryption_key FROM devices WHERE owner=? AND id=?", (owner, device)).fetchone()
             if not existing and db.execute("SELECT count(*) FROM devices WHERE owner=?", (owner,)).fetchone()[0] >= 32:
                 raise Problem(422, "device_limit")
-            if existing and (existing["token"], existing["environment"]) != (token, environment):
+            if existing and (existing["token"], existing["environment"], existing["encryption_key"]) != (token, environment, encryption_key):
                 # Retire old-token events, including leased ones. Their stable IDs
                 # stay as tombstones; a late failure cannot revoke the new token.
                 db.execute("UPDATE outbox SET payload='{}',next_attempt=1e30,lease=0 WHERE owner=? AND device=?", (owner, device))
-            db.execute("INSERT OR REPLACE INTO devices VALUES (?,?,?,?,?,?)", (owner, device, token, environment,
-                       json.dumps(sessions), time.time() + 30 * 86400))
+            db.execute("INSERT OR REPLACE INTO devices (owner,id,token,environment,sessions,expires,encryption_key) VALUES (?,?,?,?,?,?,?)", (owner, device, token, environment,
+                       json.dumps(sessions), time.time() + 30 * 86400, encryption_key))
 
     def remove_device(self, owner, device):
         with self.connection() as db:
@@ -113,15 +134,19 @@ class Store:
             db.execute("DELETE FROM outbox WHERE owner=? AND device=?", (owner, device))
 
     def enqueue(self, profile, session, turn, kind):
+        from .push_crypto import seal
         now = time.time()
+        signing_key = self.push_signing_key()
+        server_id = self.server_id
         with self.connection() as db:
-            for device in db.execute("SELECT * FROM devices WHERE expires>?", (now,)).fetchall():
+            for device in db.execute("SELECT * FROM devices WHERE expires>? AND encryption_key IS NOT NULL", (now,)).fetchall():
                 if {"profile_id": profile, "session_id": session} not in json.loads(device["sessions"]):
                     continue
                 event = hashlib.sha256(json.dumps([device["owner"], device["id"], profile, session, turn, kind]).encode()).hexdigest()
-                payload = {"event_id": event, "device_id": device["id"], "device_token": device["token"],
-                           "environment": device["environment"], "kind": kind, "server_id": self.server_id,
+                destination = {"protocol": 1, "event_id": event, "device_id": device["id"], "kind": kind, "server_id": server_id,
                            "profile_id": profile, "session_id": session}
+                payload = {"event_id": event, "device_token": device["token"], "environment": device["environment"],
+                           "encrypted": seal(device["encryption_key"], signing_key, destination, now=now)}
                 db.execute("INSERT OR IGNORE INTO outbox (id,owner,device,payload) VALUES (?,?,?,?)",
                            (event, device["owner"], device["id"], json.dumps(payload)))
 
@@ -130,6 +155,7 @@ class Store:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("DELETE FROM outbox WHERE NOT EXISTS (SELECT 1 FROM devices WHERE devices.owner=outbox.owner AND devices.id=outbox.device AND expires>?)", (now,))
+            db.execute("UPDATE outbox SET payload='{}',next_attempt=1e30,lease=0 WHERE payload!='{}' AND json_type(payload,'$.encrypted') IS NULL")
             row = db.execute("SELECT * FROM outbox WHERE next_attempt<=? AND lease<=? ORDER BY rowid LIMIT 1", (now, now)).fetchone()
             if row:
                 db.execute("UPDATE outbox SET lease=? WHERE id=?", (now + 60, row["id"]))

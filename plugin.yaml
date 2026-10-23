@@ -1,7 +1,9 @@
 name: klaudimero
-version: "0.1.1"
+version: "0.2.0"
 description: Bot icon sync and private notification events for Klaudimero.
 author: Martin Hartl
+python_dependencies:
+  - "cryptography>=50,<51"
 provides_tools: []
 provides_hooks:
   - on_session_end

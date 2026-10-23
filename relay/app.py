@@ -16,19 +16,40 @@ import jwt
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+import base64
+
+
+class Envelope(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    version: Literal[2]
+    key_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    event_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    ciphertext: str = Field(min_length=64, max_length=3200)
+
+    @model_validator(mode="after")
+    def valid_ciphertext(self):
+        try:
+            raw = base64.b64decode(self.ciphertext, validate=True)
+            if not 48 <= len(raw) <= 2400:
+                raise ValueError()
+        except (ValueError, TypeError):
+            raise ValueError("invalid_envelope") from None
+        return self
 
 
 class Push(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     event_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    device_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
     device_token: str = Field(min_length=32, max_length=512, pattern=r"^[0-9a-f]+$")
     environment: Literal["sandbox", "production"]
-    kind: Literal["reply_ready", "session_failed", "test"]
-    server_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
-    profile_id: str = Field(min_length=1, max_length=180)
-    session_id: str = Field(min_length=1, max_length=180)
+    encrypted: Envelope
+
+    @model_validator(mode="after")
+    def matching_event(self):
+        if self.event_id != self.encrypted.event_id:
+            raise ValueError("invalid_envelope")
+        return self
 
 
 class APNs:
@@ -56,13 +77,9 @@ class APNs:
 
     def send(self, push):
         host = "api.sandbox.push.apple.com" if push.environment == "sandbox" else "api.push.apple.com"
-        text = {"reply_ready": "Your agent has a new reply.", "session_failed": "Your agent needs your attention.",
-                "test": "Klaudimero notifications are connected."}[push.kind]
-        payload = {"aps": {"alert": {"title": "Klaudimero", "body": text}, "sound": "default",
-                            "thread-id": hashlib.sha256((str(push.device_id) + push.profile_id + push.session_id).encode()).hexdigest()},
-                   "klaudimero": {"protocol": 1, "server_id": str(push.server_id), "device_id": str(push.device_id),
-                                  "profile_id": push.profile_id, "session_id": push.session_id, "event_id": push.event_id,
-                                  "kind": push.kind}}
+        payload = {"aps": {"alert": {"title": "Klaudimero", "body": "Open Klaudimero to view an encrypted notification."},
+                            "mutable-content": 1, "sound": "default"},
+                   "klaudimero_encrypted": push.encrypted.model_dump()}
         return self.client.post(f"https://{host}/3/device/{push.device_token}", json=payload, headers={
             "authorization": "bearer " + self.token(), "apns-topic": self.topic, "apns-push-type": "alert",
             "apns-priority": "10", "apns-expiration": str(int(time.time()) + 3600),
