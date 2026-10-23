@@ -47,7 +47,7 @@ On initial migration, an existing server icon wins over an unmodified old device
 
 Opt-out removes the local private identity immediately, then removes the server registration/outbox, retrying remote cleanup after reconnect. Removing/replacing a saved connection first revokes its registration. Enrollments expire after 30 days without renewal. Only chats discovered/opened/enrolled by the app notify. Imported icons and chat content do not pass through this relay.
 
-**Apple delivery is not configured by installation alone.** Configure the relay separately when its Apple key is available. The app reports missing relay setup and can still sync icons. See [relay deployment](docs/relay.md) and [the encryption wire format](docs/encrypted-push.md).
+**Apple delivery is not configured by installation alone.** Configure the relay separately when its Apple key is available. The app reports missing relay setup and can still sync icons. The prebuilt `ghcr.io/hartlco/klaudimero-push-relay:0.2.0` image supports Linux AMD64/ARM64, with a [copy-and-paste Docker setup](docs/relay.md#docker-quick-start-amd64-server) and [ready-made Compose file](relay/compose.yaml). See [the encryption wire format](docs/encrypted-push.md).
 
 ## Privacy and trust boundaries
 

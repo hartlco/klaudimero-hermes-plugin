@@ -3,3 +3,4 @@
 !relay/__init__.py
 !relay/app.py
 !relay/Dockerfile
+!relay/requirements.txt

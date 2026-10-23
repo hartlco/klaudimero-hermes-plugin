@@ -1,22 +1,27 @@
 services:
   klaudimero-push:
-    build:
-      context: ..
-      dockerfile: relay/Dockerfile
+    image: ghcr.io/hartlco/klaudimero-push-relay:0.2.0
+    platform: linux/amd64
     restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
     ports: ["127.0.0.1:8081:8080"]
     environment:
       APNS_KEY_FILE: /run/secrets/apns.p8
-      APNS_KEY_ID: ${APNS_KEY_ID:-}
-      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      APNS_KEY_ID: ${APNS_KEY_ID:?Set your APNs key ID}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:?Set your Apple team ID}
       APNS_TOPIC: co.hartl.HermesApple
       KLAUDIMERO_RELAY_CLIENTS: ${KLAUDIMERO_RELAY_CLIENTS:?Set a private JSON map of relay installation credentials}
     volumes:
       - relay-data:/data
-    secrets: [apns]
+    secrets:
+      - source: apns
+        target: apns.p8
 secrets:
   apns:
-    file: ${APNS_KEY_PATH:-./AuthKey.p8}
+    file: ${APNS_KEY_PATH:-./secrets/AuthKey.p8}
 volumes:
   relay-data:
 

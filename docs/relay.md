@@ -1,4 +1,4 @@
-# Relay deployment (Apple credentials can be added later)
+# Relay deployment
 
 The relay is a separate service, not code that places an Apple key on each Hermes host:
 
@@ -11,6 +11,62 @@ Klaudimero ── authenticated dashboard ── Hermes plugin
 ```
 
 BigHelp's managed setup similarly keeps its provider sending credentials in its notification service rather than on the Hermes host: [its primary notification documentation](https://github.com/promptclickrun/bighelp-plugin/blob/main/docs/NOTIFICATIONS.md). It additionally ships a legacy direct APNs provider. This implementation uses its own encrypted-payload relay contract; it does not call BigHelp/Cadu services or reuse their keys. Cadu's public plugin key handling was not independently verified.
+
+## Docker quick start: AMD64 server
+
+The image is `ghcr.io/hartlco/klaudimero-push-relay:0.2.0`. It supports Linux AMD64 and ARM64. The [ready-to-copy Compose file](../relay/compose.yaml) explicitly selects `linux/amd64`, pulls the image without building, persists delivery state, mounts the APNs key at runtime, and listens on `127.0.0.1:8081` behind your existing HTTPS proxy. No GitHub Actions runner is used to build it.
+
+On your server:
+
+```sh
+mkdir -p klaudimero-push/secrets
+cd klaudimero-push
+curl -fL https://raw.githubusercontent.com/hartlco/klaudimero-hermes-plugin/relay-v0.2.0/relay/compose.yaml -o compose.yaml
+```
+
+Copy your `AuthKey_29QRZSQJXQ.p8` onto that server as `secrets/AuthKey.p8`. Generate a private installation credential and both environment files with the following block. It uses this deployment's public Apple identifiers, prints no secrets, and refuses to overwrite existing configuration:
+
+```sh
+umask 077
+python3 - <<'PY'
+import json, secrets
+from pathlib import Path
+paths = [Path('.env'), Path('hermes-push.env')]
+if any(p.exists() for p in paths):
+    raise SystemExit('Configuration already exists; keep the existing relay credential.')
+token = secrets.token_urlsafe(32)
+clients = json.dumps({'hermes': token})
+with paths[0].open('x') as f:
+    f.write('APNS_KEY_PATH=./secrets/AuthKey.p8\n'
+            'APNS_KEY_ID=29QRZSQJXQ\n'
+            'APNS_TEAM_ID=9E8SXF3Y36\n'
+            "KLAUDIMERO_RELAY_CLIENTS='" + clients + "'\n")
+with paths[1].open('x') as f:
+    f.write('KLAUDIMERO_PUSH_RELAY_URL=https://klaudimero-push.hartl.co\n'
+            'KLAUDIMERO_PUSH_RELAY_TOKEN=' + token + '\n')
+print('Created .env and hermes-push.env. Keep both files private.')
+PY
+sudo chown 10001:10001 secrets/AuthKey.p8
+sudo chmod 0400 secrets/AuthKey.p8
+sudo docker compose config --quiet
+sudo docker compose pull
+sudo docker compose up -d
+sudo docker compose ps
+```
+
+The key ownership matters on Linux: Compose file-backed secrets are bind mounts, so the original file must be readable by the container's UID `10001`. The image contains no Apple key or installation credential. Its root filesystem is read-only; only the private delivery volume and temporary directory are writable. The health check verifies that the authenticated HTTP service is responding, not that Apple has accepted a push.
+
+Use the values in `hermes-push.env` in your Hermes dashboard/gateway environment, then restart those processes. For a systemd service, `EnvironmentFile=/absolute/path/to/hermes-push.env` is one option; for a Hermes Docker deployment, add it as an `env_file`. Keep these settings on each relevant profile gateway as well. Do not mount the Apple `.p8` into Hermes.
+
+Point DNS for `klaudimero-push.hartl.co` to this server. If your existing Caddy runs on the host, add:
+
+```caddyfile
+klaudimero-push.hartl.co {
+    reverse_proxy 127.0.0.1:8081
+}
+```
+
+If the proxy runs in another container, connect it to the relay's Docker network and proxy to `klaudimero-push:8080`; that container's own `127.0.0.1` is not the host. Keep relay access authenticated. Once DNS/TLS and the Hermes environment are configured, enable notifications in Klaudimero and verify delivery on a physical device. Production key `29QRZSQJXQ` is restricted to `co.hartl.HermesApple`; it cannot send sandbox pushes from development builds.
 
 ## Configure the relay when ready
 
@@ -33,7 +89,8 @@ uvicorn relay.app:create_app --factory --host 127.0.0.1 --port 8081 --no-access-
 Or, once the secret file and environment exist:
 
 ```sh
-sudo docker compose -f relay/compose.yaml up -d --build
+sudo docker compose --env-file /path/to/private/relay.env -f relay/compose.yaml pull
+sudo docker compose --env-file /path/to/private/relay.env -f relay/compose.yaml up -d
 ```
 
 The container runs as UID 10001. Make the mounted secret readable by that service user and keep the data volume private. Place HTTPS in front of the loopback port, for example using Caddy.
@@ -48,7 +105,8 @@ From this repository's root on the server:
 
 ```sh
 sudo docker compose --env-file /opt/klaudimero-push/relay.env -f relay/compose.yaml config --quiet
-sudo docker compose --env-file /opt/klaudimero-push/relay.env -f relay/compose.yaml up -d --build
+sudo docker compose --env-file /opt/klaudimero-push/relay.env -f relay/compose.yaml pull
+sudo docker compose --env-file /opt/klaudimero-push/relay.env -f relay/compose.yaml up -d
 ```
 
 The proxy should forward to `127.0.0.1:8081`. If Caddy runs directly on the host, its site block is:
