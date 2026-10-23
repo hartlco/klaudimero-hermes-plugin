@@ -1,6 +1,6 @@
 services:
   klaudimero-push:
-    image: ghcr.io/hartlco/klaudimero-push-relay:0.2.0
+    image: ghcr.io/hartlco/klaudimero-push-relay:0.3.0
     platform: linux/amd64
     restart: unless-stopped
     read_only: true
@@ -13,7 +13,6 @@ services:
       APNS_KEY_ID: ${APNS_KEY_ID:?Set your APNs key ID}
       APNS_TEAM_ID: ${APNS_TEAM_ID:?Set your Apple team ID}
       APNS_TOPIC: co.hartl.HermesApple
-      KLAUDIMERO_RELAY_CLIENTS: ${KLAUDIMERO_RELAY_CLIENTS:?Set a private JSON map of relay installation credentials}
     volumes:
       - relay-data:/data
     secrets:

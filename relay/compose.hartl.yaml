@@ -1,0 +1,26 @@
+# Relay operator deployment. No Hermes URL/token or shared password is needed.
+services:
+  klaudimero-push:
+    image: ghcr.io/hartlco/klaudimero-push-relay:0.3.0
+    platform: linux/amd64
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    ports: ["127.0.0.1:8081:8080"]
+    environment:
+      APNS_KEY_FILE: /run/secrets/apns.p8
+      APNS_KEY_ID: 29QRZSQJXQ
+      APNS_TEAM_ID: 9E8SXF3Y36
+      APNS_TOPIC: co.hartl.HermesApple
+    volumes:
+      - relay-data:/data
+    secrets:
+      - source: apns
+        target: apns.p8
+secrets:
+  apns:
+    file: ./AuthKey_29QRZSQJXQ.p8
+volumes:
+  relay-data:

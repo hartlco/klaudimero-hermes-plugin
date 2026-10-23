@@ -179,3 +179,54 @@ def test_hook_registration_is_network_free_and_forward_compatible():
     ctx.callback(completed=False, future_field="ignored")
     ctx.unload()
 
+
+
+def test_managed_registration_has_no_token_and_replacement_revokes_old_grant(client, tmp_path, monkeypatch):
+    from klaudimero_plugin.api import services
+    from klaudimero_plugin.delivery import ManagedRelay, Sender
+    from klaudimero_plugin.push_crypto import key_id, decode_public_key
+    monkeypatch.setattr(Sender, "start", lambda self: None)
+    store = services()[0]
+    expected = key_id(decode_public_key(PUBLIC_KEY))
+    checked = []
+    def verify(self, grant, recipient):
+        checked.append((grant, recipient))
+        assert recipient == expected
+        return {"grant_id": grant}
+    monkeypatch.setattr(ManagedRelay, "verify_grant", verify)
+    capabilities = client.get(BASE + "/capabilities").json()
+    assert capabilities["push_relay"] == {"protocol": 2, "url": "https://klaudimero-push.hartl.co"}
+    device, first, second = [str(uuid.uuid4()) for _ in range(3)]
+    data = {"relay_grant_id": first, "sessions": [{"profile_id": "work + 日本", "session_id": "chat"}], "encryption": {"version": 2, "public_key": PUBLIC_KEY}}
+    assert client.put(BASE + "/devices/" + device, json={**data, "device_token": "a" * 64}).status_code == 422
+    assert client.put(BASE + "/devices/" + device, json=data).json() == {"registered": True, "delivery_configured": True}
+    assert checked == [(first, expected)]
+    with store.connection() as db:
+        row = db.execute("SELECT token,environment,relay_grant FROM devices").fetchone()
+        assert tuple(row) == ("", "", first)
+    store.enqueue("work + 日本", "chat", "turn1", "reply_ready")
+    old = store.claim(); packet = json.loads(old["payload"])
+    assert set(packet) == {"grant_id", "event_id", "encrypted"} and packet["grant_id"] == first
+    assert client.get(BASE + "/capabilities").json()["push_relay_configured"]
+    data["relay_grant_id"] = second
+    assert client.put(BASE + "/devices/" + device, json=data).status_code == 200
+    assert store.pending_revocations() == [first]
+    store.settle(old["id"], drop_device=True)
+    with store.connection() as db:
+        assert db.execute("SELECT relay_grant FROM devices").fetchone()[0] == second
+    assert client.delete(BASE + "/devices/" + device).status_code == 200
+    assert set(store.pending_revocations()) == {first, second}
+    assert store.claim() is None
+
+
+def test_unverified_managed_grant_never_creates_registration(client, monkeypatch):
+    from klaudimero_plugin.delivery import ManagedRelay, Sender
+    from klaudimero_plugin.api import services
+    monkeypatch.setattr(Sender, "start", lambda self: None)
+    def reject(*args):
+        raise Problem(410, "notification_grant_inactive")
+    monkeypatch.setattr(ManagedRelay, "verify_grant", reject)
+    data = {"relay_grant_id": str(uuid.uuid4()), "sessions": [], "encryption": {"version": 2, "public_key": PUBLIC_KEY}}
+    assert client.put(BASE + "/devices/" + str(uuid.uuid4()), json=data).status_code == 410
+    with services()[0].connection() as db:
+        assert db.execute("SELECT count(*) FROM devices").fetchone()[0] == 0

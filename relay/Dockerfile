@@ -3,12 +3,13 @@ LABEL org.opencontainers.image.title="Klaudimero push relay" \
       org.opencontainers.image.description="Encrypted notification relay for Klaudimero and Hermes" \
       org.opencontainers.image.source="https://github.com/hartlco/klaudimero-hermes-plugin" \
       org.opencontainers.image.url="https://github.com/hartlco/klaudimero-hermes-plugin/blob/main/docs/relay.md" \
-      org.opencontainers.image.version="0.2.0"
+      org.opencontainers.image.version="0.3.0"
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 COPY relay/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
-COPY relay/__init__.py relay/app.py /app/relay/
+COPY relay/__init__.py relay/app.py relay/managed.py relay/body_limit.py /app/relay/
+COPY klaudimero_plugin/__init__.py klaudimero_plugin/relay_auth.py /app/klaudimero_plugin/
 RUN useradd --uid 10001 --create-home relay && mkdir /data && chown relay:relay /data && chmod 700 /data
 USER relay
 EXPOSE 8080

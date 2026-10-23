@@ -1,3 +1,15 @@
+# Version 0.3.0 verification
+
+33 Python tests pass, including device ownership proof, rejected wrong-owner/proof/signature requests, recipient/host scoping, revocation and expired grants, no resurrection of revoked UUIDs, token rotation and stable delivery deduplication, retry after uncertain APNs challenge dispatch, body limits and registration throttling. Managed plugin API tests verify that Hermes stores a grant and content public key without an APNs token/environment, retires replacement grants safely and refuses unverified grants. Existing icon and HPKE tests remain covered.
+
+Runtime-backed Plugin Doctor against Hermes v0.22.5 passes discovery, manifest parsing, import and registration: zero tools and one lifecycle hook. Registration is network free.
+
+The native app opens a Python-generated ownership challenge with CryptoKit, verifies Python and native HTTP signatures against the same bytes, and rejects substituted devices, service URLs, context, ciphertext and expired challenges. Three focused iPhone simulator UI tests passed automatic enrollment, revocation/fresh re-enrollment, forged-challenge rejection and service-unavailable recovery. The fixture runs the real relay/router/signature code and injects encrypted packets through simctl; it does not prove physical-device Apple delivery.
+
+No real Apple key was used. Server DNS/TLS/key deployment, actual APNs acceptance and an independent security audit are not claimed. GitHub Actions remains absent. Docker 0.3.0 publication and runtime receipts are recorded below after verification.
+
+---
+
 # Version 0.2.0 verification
 
 The plugin is checked against real Hermes v0.22.5 (`bf0203a794a07aac3ff764972ab9087baa4e4f4e`). Runtime-backed Plugin Doctor passes discovery, import and registration with network blocked during registration: zero tools and one lifecycle hook. The declared bounded cryptography dependency is installed in the test runtime.

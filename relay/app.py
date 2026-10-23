@@ -76,21 +76,32 @@ class APNs:
             return self.jwt
 
     def send(self, push):
-        host = "api.sandbox.push.apple.com" if push.environment == "sandbox" else "api.push.apple.com"
         payload = {"aps": {"alert": {"title": "Klaudimero", "body": "Open Klaudimero to view an encrypted notification."},
                             "mutable-content": 1, "sound": "default"},
                    "klaudimero_encrypted": push.encrypted.model_dump()}
-        return self.client.post(f"https://{host}/3/device/{push.device_token}", json=payload, headers={
+        return self.post(push.device_token, push.environment, push.event_id, payload)
+
+    def send_challenge(self, token, environment, packet):
+        return self.post(token, environment, packet["challenge_id"], {
+            "aps": {"alert": {"title": "Klaudimero", "body": "Finishing notification setup."}},
+            "klaudimero_relay_enrollment": packet})
+
+    def post(self, device_token, environment, event_id, payload):
+        host = "api.sandbox.push.apple.com" if environment == "sandbox" else "api.push.apple.com"
+        return self.client.post(f"https://{host}/3/device/{device_token}", json=payload, headers={
             "authorization": "bearer " + self.token(), "apns-topic": self.topic, "apns-push-type": "alert",
             "apns-priority": "10", "apns-expiration": str(int(time.time()) + 3600),
-            "apns-id": str(uuid.uuid5(uuid.NAMESPACE_URL, push.event_id)), "apns-collapse-id": push.event_id})
+            "apns-id": str(uuid.uuid5(uuid.NAMESPACE_URL, event_id)), "apns-collapse-id": event_id})
 
 
 def create_app(provider=None, *, directory=None, clients=None):
     app = FastAPI(title="Klaudimero push relay", docs_url=None, redoc_url=None, openapi_url=None)
+    from .body_limit import BodyLimit
+    app.add_middleware(BodyLimit)
     provider = provider or APNs()
-    clients = clients if clients is not None else json.loads(os.environ.get("KLAUDIMERO_RELAY_CLIENTS", "{}"))
-    # One operator-issued credential per Hermes server; no key is compiled into the app/plugin.
+    clients = clients if clients is not None else json.loads(os.environ.get("KLAUDIMERO_RELAY_CLIENTS") or "{}")
+    # Optional compatibility for existing private installations. Managed grants
+    # authorize each device/host pair without a shared operator password.
     if not isinstance(clients, dict) or any(not isinstance(k, str) or not isinstance(v, str) or len(v) < 32 for k, v in clients.items()):
         raise ValueError("Relay clients must map installation names to credentials of at least 32 characters")
     root = Path(directory or os.environ.get("KLAUDIMERO_RELAY_DATA", "/data"))
@@ -102,6 +113,7 @@ def create_app(provider=None, *, directory=None, clients=None):
     @contextmanager
     def database():
         with sqlite3.connect(path, timeout=10) as db:
+            db.row_factory = sqlite3.Row
             yield db
 
     with database() as db:
@@ -124,12 +136,11 @@ def create_app(provider=None, *, directory=None, clients=None):
     def status(host=Depends(authenticate)):
         return {"protocol": 1, "apns_ready": provider.ready}
 
-    @app.post("/v1/push")
-    def deliver(push: Push, host=Depends(authenticate)):
+    def deliver(push: Push, host, *, digest_override=None):
         if not provider.ready:
             raise HTTPException(503, detail="apns_not_configured")
         serialized = push.model_dump_json()
-        digest = hashlib.sha256(serialized.encode()).hexdigest()
+        digest = digest_override or hashlib.sha256(serialized.encode()).hexdigest()
         now = time.time()
         with database() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -166,5 +177,11 @@ def create_app(provider=None, *, directory=None, clients=None):
             db.execute("UPDATE deliveries SET lease=0 WHERE host=? AND event=?", (host, push.event_id))
         raise HTTPException(503, detail="apns_rejected")
 
+    @app.post("/v1/push")
+    def legacy_delivery(push: Push, host=Depends(authenticate)):
+        return deliver(push, host)
+
+    from .managed import install
+    install(app, provider, database, deliver, Envelope)
     return app
 

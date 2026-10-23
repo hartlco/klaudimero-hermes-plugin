@@ -4,3 +4,8 @@
 !relay/app.py
 !relay/Dockerfile
 !relay/requirements.txt
+!relay/managed.py
+!relay/body_limit.py
+!klaudimero_plugin/
+!klaudimero_plugin/__init__.py
+!klaudimero_plugin/relay_auth.py

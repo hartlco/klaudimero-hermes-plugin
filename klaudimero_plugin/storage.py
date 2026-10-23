@@ -42,10 +42,13 @@ class Store:
                 CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, owner TEXT, device TEXT,
                     payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
                     next_attempt REAL NOT NULL DEFAULT 0, lease REAL NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS relay_revocations (grant_id TEXT PRIMARY KEY);
             """)
             db.execute("INSERT OR IGNORE INTO metadata VALUES ('server_id',?)", (str(uuid.uuid4()),))
             if "encryption_key" not in {r[1] for r in db.execute("PRAGMA table_info(devices)")}:
                 db.execute("ALTER TABLE devices ADD COLUMN encryption_key TEXT")
+            if "relay_grant" not in {r[1] for r in db.execute("PRAGMA table_info(devices)")}:
+                db.execute("ALTER TABLE devices ADD COLUMN relay_grant TEXT")
             if not db.execute("SELECT 1 FROM metadata WHERE key='encrypted_push_v2'").fetchone():
                 # Never replay plaintext events left by the previous release.
                 db.execute("UPDATE outbox SET payload='{}',next_attempt=1e30,lease=0")
@@ -115,23 +118,41 @@ class Store:
             db.execute("INSERT INTO receipts VALUES (?,?,?,?)", (owner, request, digest, json.dumps(result)))
             return result
 
-    def register_device(self, owner, device, token, environment, sessions, encryption_key=None):
+    def register_device(self, owner, device, token, environment, sessions, encryption_key=None, relay_grant=None):
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            existing = db.execute("SELECT token,environment,encryption_key FROM devices WHERE owner=? AND id=?", (owner, device)).fetchone()
+            existing = db.execute("SELECT token,environment,encryption_key,relay_grant FROM devices WHERE owner=? AND id=?", (owner, device)).fetchone()
             if not existing and db.execute("SELECT count(*) FROM devices WHERE owner=?", (owner,)).fetchone()[0] >= 32:
                 raise Problem(422, "device_limit")
-            if existing and (existing["token"], existing["environment"], existing["encryption_key"]) != (token, environment, encryption_key):
+            if existing and (existing["token"], existing["environment"], existing["encryption_key"], existing["relay_grant"]) != (token, environment, encryption_key, relay_grant):
                 # Retire old-token events, including leased ones. Their stable IDs
                 # stay as tombstones; a late failure cannot revoke the new token.
                 db.execute("UPDATE outbox SET payload='{}',next_attempt=1e30,lease=0 WHERE owner=? AND device=?", (owner, device))
-            db.execute("INSERT OR REPLACE INTO devices (owner,id,token,environment,sessions,expires,encryption_key) VALUES (?,?,?,?,?,?,?)", (owner, device, token, environment,
-                       json.dumps(sessions), time.time() + 30 * 86400, encryption_key))
+                if existing["relay_grant"] and existing["relay_grant"] != relay_grant:
+                    db.execute("INSERT OR IGNORE INTO relay_revocations VALUES (?)", (existing["relay_grant"],))
+            db.execute("INSERT OR REPLACE INTO devices (owner,id,token,environment,sessions,expires,encryption_key,relay_grant) VALUES (?,?,?,?,?,?,?,?)", (owner, device, token, environment,
+                       json.dumps(sessions), time.time() + 30 * 86400, encryption_key, relay_grant))
 
     def remove_device(self, owner, device):
         with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT relay_grant FROM devices WHERE owner=? AND id=?", (owner, device)).fetchone()
+            if row and row[0]:
+                db.execute("INSERT OR IGNORE INTO relay_revocations VALUES (?)", (row[0],))
             db.execute("DELETE FROM devices WHERE owner=? AND id=?", (owner, device))
             db.execute("DELETE FROM outbox WHERE owner=? AND device=?", (owner, device))
+
+    def pending_revocations(self):
+        with self.connection() as db:
+            return [r[0] for r in db.execute("SELECT grant_id FROM relay_revocations LIMIT 8")]
+
+    def finish_revocation(self, grant):
+        with self.connection() as db:
+            db.execute("DELETE FROM relay_revocations WHERE grant_id=?", (grant,))
+
+    def has_managed_grant(self, owner):
+        with self.connection() as db:
+            return db.execute("SELECT 1 FROM devices WHERE owner=? AND relay_grant IS NOT NULL AND expires>? LIMIT 1", (owner, time.time())).fetchone() is not None
 
     def enqueue(self, profile, session, turn, kind):
         from .push_crypto import seal
@@ -147,6 +168,8 @@ class Store:
                            "profile_id": profile, "session_id": session}
                 payload = {"event_id": event, "device_token": device["token"], "environment": device["environment"],
                            "encrypted": seal(device["encryption_key"], signing_key, destination, now=now)}
+                if device["relay_grant"]:
+                    payload = {"event_id": event, "grant_id": device["relay_grant"], "encrypted": payload["encrypted"]}
                 db.execute("INSERT OR IGNORE INTO outbox (id,owner,device,payload) VALUES (?,?,?,?)",
                            (event, device["owner"], device["id"], json.dumps(payload)))
 
@@ -168,7 +191,10 @@ class Store:
                 row = db.execute("SELECT owner,device,payload FROM outbox WHERE id=?", (event,)).fetchone()
                 if row:
                     payload = json.loads(row["payload"])
-                    removed = db.execute("DELETE FROM devices WHERE owner=? AND id=? AND token=? AND environment=?",
+                    if payload.get("grant_id"):
+                        removed = db.execute("DELETE FROM devices WHERE owner=? AND id=? AND relay_grant=?", (row["owner"], row["device"], payload["grant_id"]))
+                    else:
+                        removed = db.execute("DELETE FROM devices WHERE owner=? AND id=? AND token=? AND environment=?",
                                          (row["owner"], row["device"], payload.get("device_token"), payload.get("environment")))
                     if removed.rowcount:
                         db.execute("DELETE FROM outbox WHERE owner=? AND device=?", (row["owner"], row["device"]))

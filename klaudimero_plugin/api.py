@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from . import VERSION, PROTOCOL
 from .contracts import Problem, appearance, identifier, request_id
-from .delivery import Relay, Sender
+from .delivery import ManagedRelay, Relay, Sender
 from .storage import Store
 
 REPOSITORY = "https://github.com/hartlco/klaudimero-hermes-plugin"
@@ -85,8 +85,9 @@ class Subscription(Body):
 
 
 class Device(Body):
-    device_token: str = Field(min_length=32, max_length=512, pattern=r"^[0-9a-fA-F]+$")
-    environment: str = Field(pattern=r"^(production|sandbox)$")
+    device_token: str | None = Field(default=None, min_length=32, max_length=512, pattern=r"^[0-9a-fA-F]+$")
+    environment: str | None = Field(default=None, pattern=r"^(production|sandbox)$")
+    relay_grant_id: str | None = Field(default=None, min_length=36, max_length=36)
     sessions: list[Subscription] = Field(max_length=1000)
     encryption: dict
 
@@ -102,8 +103,10 @@ def capabilities(response: Response, account=Depends(owner)):
     response.headers["Cache-Control"] = "no-store"
     store, sender = services()
     sender.start()
+    from .relay_auth import RELAY_URL
     return {"protocol": PROTOCOL, "version": VERSION, "server_id": store.server_id,
-            "account_id": account, "avatar_sync": True, "push_relay_configured": Relay().configured,
+            "account_id": account, "avatar_sync": True, "push_relay_configured": Relay().legacy_configured or store.has_managed_grant(account),
+            "push_relay": {"protocol": 2, "url": RELAY_URL},
             "avatar_revision": store.avatar_revision(account),
             "push_content": "encrypted", "push_encryption": ALGORITHM,
             "push_signing_key": store.push_signing_public_key, "device_lease_days": 30}
@@ -126,23 +129,37 @@ def put_avatar(profile_id: str, body: AvatarUpdate, response: Response, account=
 def register_device(device_id: str, body: Device, response: Response, account=Depends(owner)):
     from .push_crypto import decode_public_key
     response.headers["Cache-Control"] = "no-store"
-    if len(body.device_token) % 2:
-        raise HTTPException(422, detail="invalid_device_token")
     sessions = [{"profile_id": call(identifier, s.profile_id), "session_id": call(identifier, s.session_id)} for s in body.sessions]
     if set(body.encryption) != {"version", "public_key"} or type(body.encryption["version"]) is not int or body.encryption["version"] != 2:
         raise HTTPException(422, detail="encrypted_push_required")
     public_key = body.encryption["public_key"]
     call(decode_public_key, public_key)
     store, sender = services()
-    call(store.register_device, account, call(request_id, device_id), body.device_token.lower(), body.environment, sessions, public_key)
+    if body.relay_grant_id:
+        if body.device_token is not None or body.environment is not None:
+            raise HTTPException(422, detail="ambiguous_registration")
+        import uuid
+        from .push_crypto import key_id
+        try:
+            grant = str(uuid.UUID(body.relay_grant_id))
+        except ValueError:
+            raise HTTPException(422, detail="invalid_relay_grant") from None
+        call(ManagedRelay(store).verify_grant, grant, key_id(decode_public_key(public_key)))
+        call(store.register_device, account, call(request_id, device_id), "", "", sessions, public_key, grant)
+    else:
+        if not body.device_token or len(body.device_token) % 2 or not body.environment:
+            raise HTTPException(422, detail="invalid_device_token")
+        call(store.register_device, account, call(request_id, device_id), body.device_token.lower(), body.environment, sessions, public_key)
     sender.start()
-    return {"registered": True, "delivery_configured": Relay().configured}
+    return {"registered": True, "delivery_configured": bool(body.relay_grant_id) or Relay().legacy_configured}
 
 
 @router.delete("/devices/{device_id}")
 def remove_device(device_id: str, response: Response, account=Depends(owner)):
     response.headers["Cache-Control"] = "no-store"
-    services()[0].remove_device(account, call(request_id, device_id))
+    store, sender = services()
+    store.remove_device(account, call(request_id, device_id))
+    sender.start()
     return {"ok": True}
 
 
