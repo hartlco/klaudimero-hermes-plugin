@@ -36,14 +36,37 @@ Or, once the secret file and environment exist:
 sudo docker compose -f relay/compose.yaml up -d --build
 ```
 
-The container runs as UID 10001. Make the mounted secret readable by that service user and keep the data volume private. Place HTTPS in front of the loopback port, for example using Caddy. No hostname is selected or deployed by this repository.
+The container runs as UID 10001. Make the mounted secret readable by that service user and keep the data volume private. Place HTTPS in front of the loopback port, for example using Caddy.
+
+### Klaudimero deployment
+
+The selected relay URL is `https://klaudimero-push.hartl.co`. The operator supplies the server, DNS, TLS proxy and private Apple key; selecting this hostname does not deploy the service.
+
+Copy `relay/.env.example` to a private path on the server, such as `/opt/klaudimero-push/relay.env`, and restrict it to the operator (`chmod 600`). Set `APNS_KEY_PATH` to the actual `.p8` path, fill in its key ID and set `KLAUDIMERO_RELAY_CLIENTS` to a JSON map containing a freshly generated installation credential. Do not put a Developer ID certificate or Mac signing private key on the relay: it needs only the APNs key. For a new production-only APNs key, select the topic `co.hartl.HermesApple`; that key will not send sandbox pushes from development builds.
+
+From this repository's root on the server:
+
+```sh
+sudo docker compose --env-file /opt/klaudimero-push/relay.env -f relay/compose.yaml config --quiet
+sudo docker compose --env-file /opt/klaudimero-push/relay.env -f relay/compose.yaml up -d --build
+```
+
+The proxy should forward to `127.0.0.1:8081`. If Caddy runs directly on the host, its site block is:
+
+```caddyfile
+klaudimero-push.hartl.co {
+    reverse_proxy 127.0.0.1:8081
+}
+```
+
+Point the hostname's DNS to that host and make HTTPS available before connecting Hermes. An authenticated `GET /v1/status` must report `apns_ready: true`; that confirms the relay found its configuration, not that Apple has accepted a push. Validate delivery on a physical device after installing the app and registering for notifications.
 
 ## Configure each Hermes host
 
 Set these in the environment of the Hermes gateway/dashboard processes (including plugin hosts), then restart the relevant processes:
 
 ```text
-KLAUDIMERO_PUSH_RELAY_URL=https://your-relay.example
+KLAUDIMERO_PUSH_RELAY_URL=https://klaudimero-push.hartl.co
 KLAUDIMERO_PUSH_RELAY_TOKEN=<this Hermes installation's relay credential>
 ```
 
