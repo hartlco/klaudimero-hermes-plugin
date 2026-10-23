@@ -143,6 +143,26 @@ def test_metadata_revision_changes_without_exposing_image_data(client, avatar):
     assert "appearance" not in capabilities and "device_token" not in capabilities
 
 
+def test_old_token_failure_cannot_revoke_rotated_registration(tmp_path):
+    store = Store(tmp_path)
+    device = str(uuid.uuid4())
+    sessions = [{"profile_id": "default", "session_id": "chat"}]
+    store.register_device("owner", device, "a" * 64, "sandbox", sessions)
+    store.enqueue("default", "chat", "old-turn", "reply_ready")
+    old = store.claim()
+    store.register_device("owner", device, "b" * 64, "production", sessions)
+    store.settle(old["id"], drop_device=True)
+    store.settle(old["id"], retry=True)
+    assert store.claim() is None
+    with store.connection() as db:
+        assert db.execute("SELECT token FROM devices").fetchone()[0] == "b" * 64
+    store.enqueue("default", "chat", "old-turn", "reply_ready")
+    assert store.claim() is None
+    store.enqueue("default", "chat", "new-turn", "reply_ready")
+    current = json.loads(store.claim()["payload"])
+    assert current["device_token"] == "b" * 64 and current["environment"] == "production"
+
+
 def test_hook_registration_is_network_free_and_forward_compatible():
     class Context:
         profile_name = "default"

@@ -1,4 +1,4 @@
-# Version 0.1.0 verification
+# Version 0.1.1 verification
 
 The plugin is checked against the real **Hermes v0.22.5**, source commit `bf0203a794a07aac3ff764972ab9087baa4e4f4e`. Hermes's runtime-backed Plugin Doctor reports successful manifest discovery/import/registration, **zero tools and one on_session_end hook**, with network access blocked during registration. The test interpreter is Python 3.14.7.
 

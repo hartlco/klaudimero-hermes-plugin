@@ -96,9 +96,14 @@ class Store:
 
     def register_device(self, owner, device, token, environment, sessions):
         with self.connection() as db:
-            existing = db.execute("SELECT 1 FROM devices WHERE owner=? AND id=?", (owner, device)).fetchone()
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute("SELECT token,environment FROM devices WHERE owner=? AND id=?", (owner, device)).fetchone()
             if not existing and db.execute("SELECT count(*) FROM devices WHERE owner=?", (owner,)).fetchone()[0] >= 32:
                 raise Problem(422, "device_limit")
+            if existing and (existing["token"], existing["environment"]) != (token, environment):
+                # Retire old-token events, including leased ones. Their stable IDs
+                # stay as tombstones; a late failure cannot revoke the new token.
+                db.execute("UPDATE outbox SET payload='{}',next_attempt=1e30,lease=0 WHERE owner=? AND device=?", (owner, device))
             db.execute("INSERT OR REPLACE INTO devices VALUES (?,?,?,?,?,?)", (owner, device, token, environment,
                        json.dumps(sessions), time.time() + 30 * 86400))
 
@@ -132,13 +137,19 @@ class Store:
 
     def settle(self, event, *, retry=False, drop_device=False):
         with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
             if drop_device:
-                row = db.execute("SELECT owner,device FROM outbox WHERE id=?", (event,)).fetchone()
+                row = db.execute("SELECT owner,device,payload FROM outbox WHERE id=?", (event,)).fetchone()
                 if row:
-                    db.execute("DELETE FROM devices WHERE owner=? AND id=?", tuple(row))
-                    db.execute("DELETE FROM outbox WHERE owner=? AND device=?", tuple(row))
+                    payload = json.loads(row["payload"])
+                    removed = db.execute("DELETE FROM devices WHERE owner=? AND id=? AND token=? AND environment=?",
+                                         (row["owner"], row["device"], payload.get("device_token"), payload.get("environment")))
+                    if removed.rowcount:
+                        db.execute("DELETE FROM outbox WHERE owner=? AND device=?", (row["owner"], row["device"]))
+                    else:
+                        db.execute("UPDATE outbox SET payload='{}',next_attempt=1e30,lease=0 WHERE id=?", (event,))
             elif retry:
-                db.execute("UPDATE outbox SET attempts=attempts+1, lease=0, next_attempt=? + min(3600,30 * (1 << min(attempts,7))) WHERE id=?", (time.time(), event))
+                db.execute("UPDATE outbox SET attempts=attempts+1, lease=0, next_attempt=? + min(3600,30 * (1 << min(attempts,7))) WHERE id=? AND payload!='{}'", (time.time(), event))
             else:
                 # Keep the event id as a tombstone so a repeated hook cannot requeue it.
                 db.execute("UPDATE outbox SET payload='{}',next_attempt=1e30,lease=0 WHERE id=?", (event,))
