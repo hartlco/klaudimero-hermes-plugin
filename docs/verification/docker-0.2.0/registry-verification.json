@@ -1,0 +1,32 @@
+{
+  "anonymous_registry_access": true,
+  "docker_pull_with_empty_auth_config": true,
+  "tags": {
+    "0.2.0": {
+      "digest": "sha256:088a32871f2a4ee27dd00e07f2e350d963cee67896081f554d6b5dc0470b4e7a",
+      "platforms": [
+        {
+          "architecture": "amd64",
+          "os": "linux"
+        },
+        {
+          "architecture": "arm64",
+          "os": "linux"
+        }
+      ]
+    },
+    "latest": {
+      "digest": "sha256:088a32871f2a4ee27dd00e07f2e350d963cee67896081f554d6b5dc0470b4e7a",
+      "platforms": [
+        {
+          "architecture": "amd64",
+          "os": "linux"
+        },
+        {
+          "architecture": "arm64",
+          "os": "linux"
+        }
+      ]
+    }
+  }
+}

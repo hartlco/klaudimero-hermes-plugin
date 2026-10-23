@@ -1,0 +1,8 @@
+{
+  "image": "ghcr.io/hartlco/klaudimero-push-relay:0.2.0,ghcr.io/hartlco/klaudimero-push-relay:latest",
+  "digest": "sha256:088a32871f2a4ee27dd00e07f2e350d963cee67896081f554d6b5dc0470b4e7a",
+  "source_commit": "da9a513124a5abf57121e4f7463b8d796ba2c889",
+  "source_tag": "relay-v0.2.0",
+  "base_image": "python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704",
+  "github_actions_used": false
+}

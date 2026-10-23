@@ -1,0 +1,4 @@
+{
+  "linux/amd64": "ES256 provider token signing, validation and caching passed with a synthetic key.",
+  "linux/arm64": "ES256 provider token signing, validation and caching passed with a synthetic key."
+}
