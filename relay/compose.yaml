@@ -10,7 +10,7 @@ services:
       APNS_KEY_ID: ${APNS_KEY_ID:-}
       APNS_TEAM_ID: ${APNS_TEAM_ID:-}
       APNS_TOPIC: co.hartl.HermesApple
-      KLAUDIMERO_RELAY_CLIENTS: ${KLAUDIMERO_RELAY_CLIENTS:-{}}
+      KLAUDIMERO_RELAY_CLIENTS: ${KLAUDIMERO_RELAY_CLIENTS:?Set a private JSON map of relay installation credentials}
     volumes:
       - relay-data:/data
     secrets: [apns]
