@@ -1,5 +1,5 @@
 name: klaudimero
-version: "0.5.0"
+version: "0.6.0"
 description: Klaudimero delivery channel, bot icon sync and encrypted notifications.
 author: Martin Hartl
 python_dependencies:

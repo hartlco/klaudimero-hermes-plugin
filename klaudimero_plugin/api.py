@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import subprocess
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -83,6 +84,18 @@ class Device(Body):
     relay_grant_id: str | None = Field(default=None, min_length=36, max_length=36)
     sessions: list[Subscription] = Field(max_length=1000)
     encryption: dict
+    platform: Literal["ios", "macos", "unknown"] = "unknown"
+
+
+class MacActivity(Body):
+    sequence: StrictInt = Field(ge=1, le=9007199254740991)
+    active: StrictBool
+
+
+@router.put("/activity/{client_id}")
+def mac_activity(client_id: str, body: MacActivity, response: Response, account=Depends(owner)):
+    response.headers["Cache-Control"] = "no-store"
+    return call(services()[0].mac_activity, account, call(request_id, client_id), body.sequence, body.active)
 
 
 class ProfileSetup(Body):
@@ -147,7 +160,7 @@ def capabilities(response: Response, account=Depends(owner)):
             "lifecycle": {"protocol": 1},
             "updater": {"protocol": 1, "python_dependencies": ["cryptography>=50,<51"]},
             "avatar_revision": store.avatar_revision(account),
-            "push_content": "encrypted", "push_preview": 1, "push_encryption": ALGORITHM,
+            "push_content": "encrypted", "push_preview": 1, "mac_activity": {"protocol": 1, "lease_seconds": 45}, "push_encryption": ALGORITHM,
             "push_signing_key": store.push_signing_public_key, "device_lease_days": 30}
 
 
@@ -184,11 +197,11 @@ def register_device(device_id: str, body: Device, response: Response, account=De
         except ValueError:
             raise HTTPException(422, detail="invalid_relay_grant") from None
         call(ManagedRelay(store).verify_grant, grant, key_id(decode_public_key(public_key)))
-        call(store.register_device, account, call(request_id, device_id), "", "", sessions, public_key, grant)
+        call(store.register_device, account, call(request_id, device_id), "", "", sessions, public_key, grant, body.platform)
     else:
         if not body.device_token or len(body.device_token) % 2 or not body.environment:
             raise HTTPException(422, detail="invalid_device_token")
-        call(store.register_device, account, call(request_id, device_id), body.device_token.lower(), body.environment, sessions, public_key)
+        call(store.register_device, account, call(request_id, device_id), body.device_token.lower(), body.environment, sessions, public_key, None, body.platform)
     sender.start()
     return {"registered": True, "delivery_configured": bool(body.relay_grant_id) or Relay().legacy_configured}
 

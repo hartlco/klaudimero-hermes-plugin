@@ -503,3 +503,38 @@ def test_new_chat_queue_without_preview_column_upgrades_without_losing_delivery(
     db, _ = homes[1]["default"]
     assert db.get_session_title(row["session_id"]) == "Keep the existing delivery"
     assert db.get_messages(row["session_id"])[0]["content"] == "Still waiting to be sent."
+
+
+def test_real_completion_hook_encrypts_the_current_named_bot_reply(homes):
+    import base64
+    import json
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+    from klaudimero_plugin.hooks import register
+    from tests.test_push_crypto import open_packet
+    _, dbs = homes
+    db, sid = dbs['work']
+    db.append_message(sid, 'user', 'Finish this turn')
+    db.append_message(sid, 'assistant', 'PRIVATE REASONING', display_kind='reasoning')
+    db.append_message(sid, 'tool', 'PRIVATE TOOL DATA', tool_name='terminal')
+    db.append_message(sid, 'assistant', 'The current Japan trip answer. 日本')
+    store = Store()
+    key = X25519PrivateKey.generate()
+    store.register_device('owner', str(uuid.uuid4()), 'a'*64, 'production',
+        [{'profile_id':'work', 'session_id':sid}], base64.b64encode(key.public_key().public_bytes_raw()).decode(), platform='ios')
+    class Context:
+        profile_name = 'work'
+        def register_platform(self, **kwargs): pass
+        def register_hook(self, name, callback): self.callback = callback
+        def on_unload(self, callback): self.unload = callback
+    context = Context(); register(context)
+    try:
+        context.callback(completed=True, session_id=sid, turn_id='named-turn')
+        row = store.claim()
+        assert row is not None
+        payload = json.loads(row['payload'])
+        opened = open_packet(payload['encrypted'], key, store.push_signing_key().public_key())
+        assert opened['notification']['body'] == 'The current Japan trip answer. 日本'
+        assert opened['destination']['profile_id'] == 'work'
+        assert 'PRIVATE' not in json.dumps(opened)
+    finally:
+        context.unload()

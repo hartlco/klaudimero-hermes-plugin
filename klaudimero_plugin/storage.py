@@ -39,6 +39,8 @@ class Store:
                 CREATE TABLE IF NOT EXISTS devices (owner TEXT, id TEXT, token TEXT NOT NULL,
                     environment TEXT NOT NULL, sessions TEXT NOT NULL, expires REAL NOT NULL,
                     PRIMARY KEY(owner,id));
+                CREATE TABLE IF NOT EXISTS mac_activity (owner TEXT, client TEXT, sequence INTEGER NOT NULL,
+                    expires REAL NOT NULL, updated REAL NOT NULL, PRIMARY KEY(owner,client));
                 CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, owner TEXT, device TEXT,
                     payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
                     next_attempt REAL NOT NULL DEFAULT 0, lease REAL NOT NULL DEFAULT 0);
@@ -59,6 +61,8 @@ class Store:
                 db.execute("ALTER TABLE devices ADD COLUMN encryption_key TEXT")
             if "relay_grant" not in {r[1] for r in db.execute("PRAGMA table_info(devices)")}:
                 db.execute("ALTER TABLE devices ADD COLUMN relay_grant TEXT")
+            if "platform" not in {r[1] for r in db.execute("PRAGMA table_info(devices)")}:
+                db.execute("ALTER TABLE devices ADD COLUMN platform TEXT NOT NULL DEFAULT 'unknown'")
             columns = {r[1] for r in db.execute("PRAGMA table_info(channel_messages)")}
             if "target_kind" not in columns:
                 db.execute("ALTER TABLE channel_messages ADD COLUMN target_kind TEXT NOT NULL DEFAULT 'bot'")
@@ -143,7 +147,7 @@ class Store:
             db.execute("INSERT INTO receipts VALUES (?,?,?,?)", (owner, request, digest, json.dumps(result)))
             return result
 
-    def register_device(self, owner, device, token, environment, sessions, encryption_key=None, relay_grant=None):
+    def register_device(self, owner, device, token, environment, sessions, encryption_key=None, relay_grant=None, platform="unknown"):
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute("SELECT token,environment,encryption_key,relay_grant FROM devices WHERE owner=? AND id=?", (owner, device)).fetchone()
@@ -155,8 +159,39 @@ class Store:
                 db.execute("UPDATE outbox SET payload='{}',next_attempt=1e30,lease=0 WHERE owner=? AND device=?", (owner, device))
                 if existing["relay_grant"] and existing["relay_grant"] != relay_grant:
                     db.execute("INSERT OR IGNORE INTO relay_revocations VALUES (?)", (existing["relay_grant"],))
-            db.execute("INSERT OR REPLACE INTO devices (owner,id,token,environment,sessions,expires,encryption_key,relay_grant) VALUES (?,?,?,?,?,?,?,?)", (owner, device, token, environment,
-                       json.dumps(sessions), time.time() + 30 * 86400, encryption_key, relay_grant))
+            db.execute("INSERT OR REPLACE INTO devices (owner,id,token,environment,sessions,expires,encryption_key,relay_grant,platform) VALUES (?,?,?,?,?,?,?,?,?)", (owner, device, token, environment,
+                       json.dumps(sessions), time.time() + 30 * 86400, encryption_key, relay_grant, platform))
+
+    def mac_activity(self, owner, client, sequence, active):
+        """A server-timed lease, independent of Apple notification permission.
+
+        Retain inactive sequence fences so a delayed active request cannot
+        overwrite a newer resign/quit request. Duplicate requests never renew.
+        """
+        now = time.time()
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("DELETE FROM mac_activity WHERE updated<?", (now - 30 * 86400,))
+            previous = db.execute("SELECT * FROM mac_activity WHERE owner=? AND client=?", (owner, client)).fetchone()
+            if previous and sequence < previous["sequence"]:
+                raise Problem(409, "activity_sequence_stale")
+            if previous and sequence == previous["sequence"]:
+                return {"sequence": sequence, "active": previous["expires"] > now, "lease_seconds": 45}
+            if not previous and db.execute("SELECT count(*) FROM mac_activity WHERE owner=?", (owner,)).fetchone()[0] >= 64:
+                raise Problem(422, "activity_client_limit")
+            db.execute("INSERT OR REPLACE INTO mac_activity VALUES (?,?,?,?,?)",
+                       (owner, client, sequence, now + 45 if active else 0, now))
+            if active:
+                self._quiet_mobile_outbox(db, now)
+            return {"sequence": sequence, "active": active, "lease_seconds": 45}
+
+    @staticmethod
+    def _quiet_mobile_outbox(db, now):
+        # Keep event tombstones: a repeated completion hook must not buzz the
+        # phone later, and queued network retries must not create an alert burst.
+        db.execute("""UPDATE outbox SET payload='{}',next_attempt=1e30,lease=0 WHERE payload!='{}'
+            AND EXISTS (SELECT 1 FROM mac_activity a WHERE a.owner=outbox.owner AND a.expires>?)
+            AND EXISTS (SELECT 1 FROM devices d WHERE d.owner=outbox.owner AND d.id=outbox.device AND d.platform!='macos')""", (now,))
 
     def remove_device(self, owner, device):
         with self.connection() as db:
@@ -209,11 +244,13 @@ class Store:
                     payload = {"event_id": event, "grant_id": device["relay_grant"], "encrypted": payload["encrypted"]}
                 db.execute("INSERT OR IGNORE INTO outbox (id,owner,device,payload) VALUES (?,?,?,?)",
                            (event, device["owner"], device["id"], json.dumps(payload)))
+            self._quiet_mobile_outbox(db, now)
 
     def claim(self):
         now = time.time()
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
+            self._quiet_mobile_outbox(db, now)
             db.execute("DELETE FROM outbox WHERE NOT EXISTS (SELECT 1 FROM devices WHERE devices.owner=outbox.owner AND devices.id=outbox.device AND expires>?)", (now,))
             db.execute("UPDATE outbox SET payload='{}',next_attempt=1e30,lease=0 WHERE payload!='{}' AND json_type(payload,'$.encrypted') IS NULL")
             row = db.execute("SELECT * FROM outbox WHERE next_attempt<=? AND lease<=? ORDER BY rowid LIMIT 1", (now, now)).fetchone()

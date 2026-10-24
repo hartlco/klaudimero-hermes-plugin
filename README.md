@@ -71,7 +71,7 @@ The relay sees a device token, APNs environment, opaque recipient-key/event IDs,
 
 Enrollment and first signing-key pinning use the app's existing authenticated Hermes connection. **Use HTTPS for an authenticated initial key exchange and protection against an active network attacker.** Encryption does not repair an untrusted or intercepted bootstrap connection. Once pinned, a replacement signing key is refused until explicitly re-paired. Private device keys are non-synchronizing Keychain items protected after first unlock. Only per-connection content keys are shared with the signed notification extension; the global enrollment identity stays in the app-only Keychain. They are never uploaded or stored in preferences.
 
-Managed sending uses device-issued grants and the Hermes host signing key. No shared relay password is distributed to apps or plugins. The `.p8` key stays in the relay's runtime secret mount. Ciphertext is authenticated and fresh for one hour; stable event IDs and delivery leases reduce duplicates, without promising exactly-once Apple display or a ratcheting/forward-secure conversation protocol. This release encrypts fixed completion/failure events and routing, not rich chat previews.
+Managed sending uses device-issued grants and the Hermes host signing key. No shared relay password is distributed to apps or plugins. The `.p8` key stays in the relay's runtime secret mount. Ciphertext is authenticated and fresh for one hour; stable event IDs and delivery leases reduce duplicates, without promising exactly-once Apple display or a ratcheting/forward-secure conversation protocol. Reply previews and routing remain encrypted from Hermes to the receiving app; the relay cannot read them.
 
 ## Upgrading an existing pinned installation
 
@@ -113,3 +113,12 @@ No real Apple key or phone is needed for those tests. Hardware delivery requires
 Each accepted queue item uses a stable new-chat identity and a message marker, preserving recovery across crashes and compression. A repeated delivery ID cannot create another chat; a new caller invocation without a stable ID remains a distinct delivery. Existing main-chat subscribers for that bot receive the notification, with the encrypted session route set to the new chat. Other bots and unrelated chat enrollments receive nothing. This explicit delivery scope is separate from compression aliases. The app's existing push opt-out, keys and grants remain authoritative. Chat titles and suggestion bodies stay in local Hermes history and are never added as plaintext APNs content.
 
 The new sessions use source `delivery`, allowing proactive source readers to exclude generated suggestions and avoid feedback loops. Existing main-chat behavior and device registration APIs remain compatible.
+
+
+## Quiet phones while using a Mac (0.6)
+
+The Mac app sends an authenticated activity heartbeat while any Klaudimero scene is active. This works even if Mac notification permission is off. Activity is scoped to the same Hermes account, spans that account's bot profiles, and does not affect another user's notifications. The server gives each Mac a 45-second lease, renewed every 15 seconds; deactivation releases it immediately. A crash, sleep or lost connection cannot leave a permanent mute. Sequence fences reject older in-flight heartbeats after a newer deactivation.
+
+While at least one Mac is active, the plugin retires that account's pending/new mobile push events. Replies remain in Hermes and sync normally into the phone app. It does not send a delayed burst when the Mac becomes inactive. Existing clients without a platform field are treated as mobile; new Mac registrations identify themselves. Messages already handed to Apple before an activity change may still arrive.
+
+The relay image and Apple certificates do not change. Upgrade every installed bot copy to the same reviewed release, then restart both the Hermes dashboard and gateway so old Python handlers are replaced. Version labels alone are not proof: capabilities must include `push_preview: 1` and `mac_activity: {protocol: 1, lease_seconds: 45}`. A server copy reporting 0.5.0 while omitting `push_preview` is still running the older notification implementation and will send generic decrypted alerts.
