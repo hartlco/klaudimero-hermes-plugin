@@ -76,8 +76,8 @@ Version 0.4.0 adds the delivery channel. Its push protocol stays compatible with
 Existing packages are pinned; Hermes deliberately refuses an ordinary update of a pinned checkout. **Update plugin** explicitly replaces the plugin code, including local edits; back those edits up first. It never bypasses Hermes's scan/capability decisions. Alternatively, move the pin using Hermes's documented CLI:
 
 ```sh
-hermes plugins install https://github.com/hartlco/klaudimero-hermes-plugin --force --ref <reviewed-0.4.0-commit> --enable
-hermes -p my-bot plugins install https://github.com/hartlco/klaudimero-hermes-plugin --force --ref <reviewed-0.4.0-commit> --enable
+hermes plugins install https://github.com/hartlco/klaudimero-hermes-plugin --force --ref 65caaec5c9e7a0b1970000a2394804e6bb65ca4a --enable
+hermes -p my-bot plugins install https://github.com/hartlco/klaudimero-hermes-plugin --force --ref 65caaec5c9e7a0b1970000a2394804e6bb65ca4a --enable
 ```
 
 Icon/device data is outside the checkout. New installations use the app's pinned installer. Hermes's package manager must admit the declared `cryptography>=50,<51` dependency; resolve any reported dependency conflict through Hermes rather than forcing incompatible core packages.

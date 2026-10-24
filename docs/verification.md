@@ -1,6 +1,6 @@
 # Version 0.4.0 verification
 
-43 Python tests pass on Python3.14 against real Hermes v0.22.5 (`bf0203a794a07aac3ff764972ab9087baa4e4f4e`). Runtime-backed Plugin Doctor reports no findings: discovery, manifest, import and registration succeed with network blocked during registration. No model tools or prompts are added.
+43 Python tests pass on Python3.14 against both real Hermes v0.22.5 (`bf0203a794a07aac3ff764972ab9087baa4e4f4e`) and v0.22.4 (`4d04303`, the operator's current dashboard version). Runtime-backed Plugin Doctor reports no findings: discovery, manifest, import and registration succeed with network blocked during registration. No model tools or prompts are added.
 
 Channel tests use the actual PlatformEntry, gateway adapter, dashboard channel catalog, gateway config loader, cron delivery targets and standalone send dispatcher. Both live gateway and standalone cron sends append to real SessionDB main chats, including named profiles and compression tips. Public turn leases defer busy chats; FIFO retries and process-death marker recovery avoid overtaking and duplicate transcript rows. Unknown/archived chats and unsupported threads/attachments fail honestly. Explicit channel disable is preserved. Actual HPKE outbox packets contain no delivery text and honor profile/session enrollment, including compression ancestors. Named-profile pin replacement requires an explicit update flag and a fixed public repository.
 
