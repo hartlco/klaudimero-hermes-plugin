@@ -252,9 +252,73 @@ def test_profile_pin_replacement_requires_explicit_update(homes, client, monkeyp
     body = {"profile_ids": ["work"], "revision": "a" * 40}
     result = client.post("/api/plugins/klaudimero/profiles/enable", json=body)
     assert result.status_code == 200 and not result.json()["profiles"][0]["enabled"] and not calls
-    result = client.post("/api/plugins/klaudimero/profiles/enable", json={**body, "update": True})
+    result = client.post("/api/plugins/klaudimero/profiles/enable", json={**body, "update": True, "approve_python_dependencies": True})
     assert result.status_code == 200 and result.json()["profiles"][0]["enabled"]
-    assert calls[0][0] == ["/test/bin/hermes", "-p", "work", "plugins", "install", api.REPOSITORY, "--ref", "a" * 40, "--enable", "--force"]
+    assert calls[0][0] == ["/test/bin/hermes", "-p", "work", "plugins", "install", api.REPOSITORY, "--ref", "a" * 40, "--enable", "--yes-deps", "--force"]
     assert "shell" not in calls[0][1]
     assert client.post("/api/plugins/klaudimero/profiles/enable", json={**body, "profile_ids": ["../other"], "update": True}).status_code == 404
     assert len(calls) == 1
+
+
+def test_update_requires_approval_verifies_pin_and_keeps_retry_receipt(homes, client, monkeypatch):
+    from types import SimpleNamespace
+    from klaudimero_plugin import updates
+    calls = []; pin = "a" * 40
+    monkeypatch.setattr(updates.shutil, "which", lambda tool: "/test/bin/" + tool)
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout=(pin + "\n").encode())
+    monkeypatch.setattr(updates.subprocess, "run", run)
+    body = {"request_id": str(uuid.uuid4()), "profile_id": "work", "revision": pin}
+    assert client.post("/api/plugins/klaudimero/updates", json=body).status_code == 409
+    assert not calls
+    body["approve_python_dependencies"] = True
+    response = client.post("/api/plugins/klaudimero/updates", json=body)
+    assert response.status_code == 200 and response.json()["state"] == "complete"
+    assert calls[0][0] == ["/test/bin/hermes", "-p", "work", "plugins", "install", updates.REPOSITORY,
+                          "--ref", pin, "--enable", "--force", "--yes-deps"]
+    assert all("shell" not in kwargs for args, kwargs in calls)
+    assert client.post("/api/plugins/klaudimero/updates", json=body).json() == response.json()
+    assert len(calls) == 2
+    assert client.post("/api/plugins/klaudimero/updates", json={**body, "revision": "b" * 40}).status_code == 409
+    client.headers["Authorization"] = "Bearer bob"
+    assert client.get("/api/plugins/klaudimero/updates/" + body["request_id"]).status_code == 404
+    assert client.post("/api/plugins/klaudimero/updates", json=body).status_code == 409
+
+
+def test_update_refusal_or_unverified_tree_never_reports_success(homes, client, monkeypatch):
+    from types import SimpleNamespace
+    from klaudimero_plugin import updates
+    monkeypatch.setattr(updates.shutil, "which", lambda tool: "/test/bin/" + tool)
+    for failure in [True, False]:
+        calls = []
+        def run(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=1 if failure else 0, stdout=b"private credential output")
+        monkeypatch.setattr(updates.subprocess, "run", run)
+        body = {"request_id": str(uuid.uuid4()), "profile_id": "default", "revision": "c" * 40,
+                "approve_python_dependencies": True}
+        result = client.post("/api/plugins/klaudimero/updates", json=body)
+        assert result.json()["state"] == "failed" and not result.json()["restart_required"]
+        assert "private credential" not in result.text
+        count = len(calls)
+        assert client.post("/api/plugins/klaudimero/updates", json=body).json() == result.json()
+        assert len(calls) == count
+
+
+def test_real_hermes_forced_http_install_cannot_carry_dependency_approval(tmp_path, monkeypatch):
+    from unittest.mock import patch
+    from hermes_cli.plugins_transaction import publish_plugin
+    from hermes_cli.plugins_cmd import PluginOperationError
+    from hermes_cli.web_models import _AgentPluginInstallBody
+    target = tmp_path / "installed"; target.mkdir()
+    staged = tmp_path / "candidate"; staged.mkdir()
+    (staged / "plugin.yaml").write_text('name: klaudimero\nversion: "0.4.1"\npython_dependencies:\n  - "cryptography>=50,<51"\n')
+    body = _AgentPluginInstallBody(identifier=channel.__name__, force=True, enable=True)
+    with patch("pm.workspace.enabled_plugin_dirs", return_value=[target.resolve()]), patch("pm.client.sync_venv") as sync:
+        # Real publish and consent logic; only final PM execution is substituted.
+        with pytest.raises(PluginOperationError, match="dependency install skipped"):
+            publish_plugin(staged, target, {}, {}, require_consent=True, assume_consent=body.enable and not body.force)
+        assert not sync.called
+        publish_plugin(staged, target, {}, {}, require_consent=True, assume_consent=True)
+        assert sync.call_args.kwargs["explicit"] is True

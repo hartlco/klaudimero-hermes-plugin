@@ -11,7 +11,7 @@ The app continues to chat without this plugin. The plugin registers a local deli
 
 ## Install
 
-In Klaudimero, open **More → Settings → Klaudimero plugin → Install plugin**. Review the source and confirm. The app uses Hermes's own authenticated plugin installer with an exact reviewed Git commit; it never runs an agent prompt to install code. The plugin's setup endpoint uses the public Hermes CLI to enable the same package for named profiles. Fresh installation never overwrites an existing package. The separate **Update plugin** confirmation can replace this plugin's pinned code for all known bots; icon and notification data stays outside the checkout. Gateways are never restarted automatically.
+In Klaudimero, open **More → Settings → Klaudimero plugin → Install plugin**. Review the source and confirm. Fresh installation uses Hermes's authenticated installer and an exact reviewed Git commit. Plugin0.4.1 adds an authenticated updater that calls Hermes's public CLI with `--force --yes-deps` only after the app explicitly approves package replacement and the declared Python dependency. It verifies the installed Git SHA and stores an owner-scoped retry receipt. Fresh installation never overwrites an existing package. Icon/notification data stays outside the checkout; gateways are never restarted automatically. No model prompt is used to install code.
 
 Manual installation:
 
@@ -71,13 +71,16 @@ Managed sending uses device-issued grants and the Hermes host signing key. No sh
 
 ## Upgrading an existing pinned installation
 
-Version 0.4.0 adds the delivery channel. Its push protocol stays compatible with relay 0.3.0; an existing working relay needs no update. Klaudimero 0.2.2 can already display these delivered messages. App 0.2.3 adds **Settings → Klaudimero plugin → Update plugin** and pins this release. Confirm that action, then restart the Hermes dashboard and relevant profile gateways. If the dashboard still serves the old API during setup, restart it first and run **Update plugin** once more to upgrade the named bots. Ordinary users do not configure a relay.
+Plugin0.4.1 fixes updating an active plugin with Python dependencies. App0.2.4 uses the authenticated updater and retains failures across refreshes. Hermes0.22.4/0.22.5's forced HTTP installer cannot carry dependency consent, so the old0.2.3 app's Update action cannot upgrade0.3/0.4. A restart alone does not fix that refusal. **Existing0.3.0/0.4.0 installations need this one-time CLI upgrade**, including `--yes-deps`, on the default Hermes host. Restart its dashboard, install app0.2.4, and use Update plugin to finish named bots. Subsequent updates work in the app.
+
+The delivery channel remains compatible with relay0.3.0; the relay needs no change. Existing icons, devices and chat history are retained.
 
 Existing packages are pinned; Hermes deliberately refuses an ordinary update of a pinned checkout. **Update plugin** explicitly replaces the plugin code, including local edits; back those edits up first. It never bypasses Hermes's scan/capability decisions. Alternatively, move the pin using Hermes's documented CLI:
 
 ```sh
-hermes plugins install https://github.com/hartlco/klaudimero-hermes-plugin --force --ref 65caaec5c9e7a0b1970000a2394804e6bb65ca4a --enable
-hermes -p my-bot plugins install https://github.com/hartlco/klaudimero-hermes-plugin --force --ref 65caaec5c9e7a0b1970000a2394804e6bb65ca4a --enable
+hermes -p default plugins install https://github.com/hartlco/klaudimero-hermes-plugin --force --ref <reviewed-0.4.1-commit> --enable --yes-deps
+# Alternatively upgrade a named bot directly:
+hermes -p my-bot plugins install https://github.com/hartlco/klaudimero-hermes-plugin --force --ref <reviewed-0.4.1-commit> --enable --yes-deps
 ```
 
 Icon/device data is outside the checkout. New installations use the app's pinned installer. Hermes's package manager must admit the declared `cryptography>=50,<51` dependency; resolve any reported dependency conflict through Hermes rather than forcing incompatible core packages.

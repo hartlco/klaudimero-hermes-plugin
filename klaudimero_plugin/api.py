@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictBool
 
 from . import VERSION, PROTOCOL
 from .contracts import Problem, appearance, identifier, request_id
@@ -89,6 +89,28 @@ class ProfileSetup(Body):
     profile_ids: list[str] = Field(max_length=16)
     revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     update: bool = False
+    approve_python_dependencies: StrictBool = False
+
+
+class PluginUpdate(Body):
+    request_id: str = Field(min_length=36, max_length=36)
+    profile_id: str = Field(min_length=1, max_length=180)
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    approve_python_dependencies: StrictBool = False
+
+
+@router.post("/updates")
+def update_plugin(body: PluginUpdate, response: Response, account=Depends(owner)):
+    from .updates import update
+    response.headers["Cache-Control"] = "no-store"
+    return call(update, account, body.request_id, body.profile_id, body.revision, body.approve_python_dependencies)
+
+
+@router.get("/updates/{receipt}")
+def update_status(receipt: str, response: Response, account=Depends(owner)):
+    from .updates import status
+    response.headers["Cache-Control"] = "no-store"
+    return call(status, account, receipt)
 
 
 @router.get("/capabilities")
@@ -102,6 +124,7 @@ def capabilities(response: Response, account=Depends(owner)):
             "account_id": account, "avatar_sync": True, "push_relay_configured": Relay().legacy_configured or store.has_managed_grant(account),
             "push_relay": {"protocol": 2, "url": RELAY_URL},
             "channel": {"platform": "klaudimero", "default_target": "bot", "delivery": "bot_chat"},
+            "updater": {"protocol": 1, "python_dependencies": ["cryptography>=50,<51"]},
             "avatar_revision": store.avatar_revision(account),
             "push_content": "encrypted", "push_encryption": ALGORITHM,
             "push_signing_key": store.push_signing_public_key, "device_lease_days": 30}
@@ -188,7 +211,11 @@ def enable_profiles(body: ProfileSetup, account=Depends(owner)):
                 continue
         arguments = [executable, "-p", profile, "plugins"]
         if body.update or not installed:
+            if not body.approve_python_dependencies:
+                results.append({"profile_id": profile, "enabled": False, "error": "python_dependency_approval_required"})
+                continue
             arguments += ["install", REPOSITORY, "--ref", body.revision, "--enable"]
+            arguments += ["--yes-deps"]
             if body.update:
                 arguments += ["--force"]
         else:
