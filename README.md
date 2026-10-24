@@ -21,7 +21,11 @@ hermes plugins install https://github.com/hartlco/klaudimero-hermes-plugin --ena
 hermes -p my-bot plugins install https://github.com/hartlco/klaudimero-hermes-plugin --enable
 ```
 
-Restart the dashboard if its plugin API is not available. Restart the relevant gateways after installing/enabling notification hooks if your Hermes deployment did not activate them live. Icon sync works as soon as the API is mounted. The app does not restart services during an active conversation.
+Restart the dashboard if its plugin API is not available. Restart the relevant gateways after installing/enabling notification hooks if your Hermes deployment did not activate them live. Icon sync works as soon as the API is mounted. Restarts are explicit actions in the app, with confirmation that active work can be interrupted.
+
+Plugin **0.4.2** adds **Restart dashboard** for Linux systemd deployments. It walks from the isolated plugin host to its Hermes dashboard/serve ancestor, reads the unified cgroup and verifies that the unit's live MainPID is that exact dashboard process. It never accepts a unit, PID or command from the client, restarts a parent container/cron/user manager, escalates with sudo, or kills an unmanaged process. The systemd job is queued with `--no-block`; the app reports success only after a different dashboard process identity reconnects under the same server/account and loads the installed version. Receipts and an expected instance prevent repeated or stale requests. Permission refusals stay visible. Manual/Docker/launchd/wrapped services get a host-side restart instruction instead.
+
+The app also offers **Restart gateway** through Hermes's existing authenticated action route. It checks the matching action PID, exit status and gateway readiness. This targets the default gateway; restart independently managed named-profile gateways on their host. Existing 0.4.1 routers need one host-side dashboard restart after updating to 0.4.2 before the new dashboard restart route becomes available. No restart runs as a side effect of installing/updating.
 
 ## Where data lives
 

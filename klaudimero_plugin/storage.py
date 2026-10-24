@@ -43,6 +43,8 @@ class Store:
                     payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
                     next_attempt REAL NOT NULL DEFAULT 0, lease REAL NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS relay_revocations (grant_id TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS dashboard_restarts (id TEXT PRIMARY KEY,owner TEXT NOT NULL,
+                    instance TEXT NOT NULL,state TEXT NOT NULL,error TEXT,created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS plugin_updates (id TEXT PRIMARY KEY,owner TEXT NOT NULL,
                     profile TEXT NOT NULL,revision TEXT NOT NULL,state TEXT NOT NULL,created REAL NOT NULL,error TEXT);
                 CREATE TABLE IF NOT EXISTS channel_messages (id TEXT PRIMARY KEY, profile TEXT NOT NULL,

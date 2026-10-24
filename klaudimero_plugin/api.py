@@ -113,6 +113,26 @@ def update_status(receipt: str, response: Response, account=Depends(owner)):
     return call(status, account, receipt)
 
 
+class DashboardRestart(Body):
+    request_id: str = Field(min_length=36, max_length=36)
+    expected_instance: str = Field(pattern=r"^[0-9a-f]{64}$")
+    interrupt: StrictBool = False
+
+
+@router.get("/lifecycle")
+def lifecycle(response: Response, account=Depends(owner)):
+    from .lifecycle import plan
+    response.headers["Cache-Control"] = "no-store"
+    return plan()
+
+
+@router.post("/lifecycle/dashboard/restart")
+def restart_dashboard(body: DashboardRestart, response: Response, account=Depends(owner)):
+    from .lifecycle import restart
+    response.headers["Cache-Control"] = "no-store"
+    return call(restart, account, body.request_id, body.expected_instance, body.interrupt)
+
+
 @router.get("/capabilities")
 def capabilities(response: Response, account=Depends(owner)):
     from .push_crypto import ALGORITHM
@@ -124,6 +144,7 @@ def capabilities(response: Response, account=Depends(owner)):
             "account_id": account, "avatar_sync": True, "push_relay_configured": Relay().legacy_configured or store.has_managed_grant(account),
             "push_relay": {"protocol": 2, "url": RELAY_URL},
             "channel": {"platform": "klaudimero", "default_target": "bot", "delivery": "bot_chat"},
+            "lifecycle": {"protocol": 1},
             "updater": {"protocol": 1, "python_dependencies": ["cryptography>=50,<51"]},
             "avatar_revision": store.avatar_revision(account),
             "push_content": "encrypted", "push_encryption": ALGORITHM,
