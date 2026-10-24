@@ -322,3 +322,50 @@ def test_real_hermes_forced_http_install_cannot_carry_dependency_approval(tmp_pa
         assert not sync.called
         publish_plugin(staged, target, {}, {}, require_consent=True, assume_consent=True)
         assert sync.call_args.kwargs["explicit"] is True
+
+
+def test_hook_preview_reads_only_visible_tail_from_owning_profile(homes):
+    from klaudimero_plugin.notification_preview import session_preview
+    _, dbs = homes
+    db, sid = dbs['work']
+    db.append_message(sid, 'user', 'Current request')
+    db.append_message(sid, 'assistant', 'SECRET REASONING', display_kind='reasoning')
+    db.append_message(sid, 'tool', 'SECRET TOOL PAYLOAD', tool_name='terminal')
+    db.append_message(sid, 'assistant', 'This is the actual final answer.')
+    assert session_preview('work', sid, 'reply_ready')['body'] == 'This is the actual final answer.'
+    assert session_preview('default', sid, 'reply_ready') is None
+    assert session_preview('work', sid, 'session_failed') is None
+    db.append_message(sid, 'user', 'A newer request must not reuse the old answer')
+    assert session_preview('work', sid, 'reply_ready') is None
+
+
+def test_channel_retry_keeps_its_exact_preview_after_transcript_moves_on(homes, monkeypatch):
+    import base64
+    import json
+    from cryptography.hazmat.primitives.asymmetric import x25519
+    from klaudimero_plugin.push_crypto import SUITE, context
+    _, dbs = homes
+    db, sid = dbs['work']; store = Store()
+    private = x25519.X25519PrivateKey.generate()
+    store.register_device('owner', str(uuid.uuid4()), 'a'*64, 'production',
+        [{'profile_id':'work','session_id':sid}], base64.b64encode(private.public_key().public_bytes_raw()).decode())
+    enqueue = Store.enqueue
+    def fail(*a, **kw): raise RuntimeError('Simulated failure after canonical append')
+    monkeypatch.setattr(Store, 'enqueue', fail)
+    channel.submit('bot:work', 'Exact scheduled update: 日本')
+    with store.connection() as conn:
+        row = conn.execute('SELECT * FROM channel_messages').fetchone()
+        assert row['status']=='written' and row['content']==''
+        assert json.loads(row['notification_preview'])['body']=='Exact scheduled update: 日本'
+        conn.execute('UPDATE channel_messages SET next_attempt=0')
+    db.append_message(sid, 'assistant', 'Another unrelated answer that must not leak into the push')
+    monkeypatch.setattr(Store, 'enqueue', enqueue)
+    channel.drain(store)
+    packet = json.loads(store.claim()['payload'])['encrypted']
+    signed = json.loads(SUITE.decrypt(base64.b64decode(packet['ciphertext']), private,
+                                     info=context(packet['key_id'], packet['event_id'])))
+    content = json.loads(base64.b64decode(signed['payload']))
+    assert content['notification']['body']=='Exact scheduled update: 日本'
+    with store.connection() as conn:
+        row=conn.execute('SELECT * FROM channel_messages').fetchone()
+        assert row['status']=='notified' and row['notification_preview'] is None

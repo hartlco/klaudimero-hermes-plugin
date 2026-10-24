@@ -87,3 +87,30 @@ def test_old_plaintext_queue_is_retired_even_from_a_legacy_worker(tmp_path):
                    json.dumps({"device_token": "b" * 64, "profile_id": "private", "session_id": "private", "kind": "reply_ready"})))
     assert store.claim() is None
     with store.connection() as db: assert db.execute("SELECT payload FROM outbox").fetchone()[0] == "{}"
+
+
+def test_message_preview_is_signed_encrypted_and_bounded():
+    from klaudimero_plugin.notification_preview import preview
+    key = x25519.X25519PrivateKey.generate(); signing = ed25519.Ed25519PrivateKey.generate()
+    public = base64.b64encode(key.public_key().public_bytes_raw()).decode()
+    value = preview('Private reply\n日本 🙂 ' * 100)
+    assert value['body'].startswith('Private reply 日本 🙂') and len(value['body'].encode()) <= 512
+    encrypted = seal(public, signing, destination(), notification=value)
+    opened = open_packet(encrypted, key, signing.public_key())
+    assert opened['notification'] == value
+    assert 'Private reply' not in json.dumps(encrypted) and 'notification' not in json.dumps(encrypted)
+    with pytest.raises(InvalidSignature): open_packet(encrypted, key, ed25519.Ed25519PrivateKey.generate().public_key())
+
+
+def test_preview_respects_existing_ciphertext_and_apns_budgets():
+    key = x25519.X25519PrivateKey.generate(); signing = ed25519.Ed25519PrivateKey.generate()
+    public = base64.b64encode(key.public_key().public_bytes_raw()).decode()
+    value = {**destination(), 'profile_id': '日'*120, 'session_id': '本'*120}
+    packet = seal(public, signing, value, notification={'title': 'Klaudimero', 'body': '"'*512})
+    assert len(base64.b64decode(packet['ciphertext'])) <= 2400
+    wire = {'aps': {'alert': {'title': 'Klaudimero', 'body': 'Open Klaudimero to view an encrypted notification.'},
+                    'mutable-content': 1, 'sound': 'default'}, 'klaudimero_encrypted': packet}
+    assert len(json.dumps(wire).encode()) <= 4096
+    opened = open_packet(packet, key, signing.public_key())
+    assert opened['destination'] == value
+    assert not opened.get('notification') or len(opened['notification']['body'].encode()) < 512

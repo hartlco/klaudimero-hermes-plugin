@@ -32,7 +32,8 @@ def register(ctx):
             return
         if sender is None:
             sender = Sender(Store())
-        sender.store.enqueue(*event)
+        from .notification_preview import session_preview
+        sender.store.enqueue(*event, notification=session_preview(event[0], event[1], event[3]))
         sender.start()
 
     def unload():

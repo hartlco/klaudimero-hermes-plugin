@@ -53,6 +53,8 @@ class Store:
                     next_attempt REAL NOT NULL DEFAULT 0, error TEXT);
             """)
             db.execute("INSERT OR IGNORE INTO metadata VALUES ('server_id',?)", (str(uuid.uuid4()),))
+            if "notification_preview" not in {r[1] for r in db.execute("PRAGMA table_info(channel_messages)")}:
+                db.execute("ALTER TABLE channel_messages ADD COLUMN notification_preview TEXT")
             if "encryption_key" not in {r[1] for r in db.execute("PRAGMA table_info(devices)")}:
                 db.execute("ALTER TABLE devices ADD COLUMN encryption_key TEXT")
             if "relay_grant" not in {r[1] for r in db.execute("PRAGMA table_info(devices)")}:
@@ -162,7 +164,7 @@ class Store:
         with self.connection() as db:
             return db.execute("SELECT 1 FROM devices WHERE owner=? AND relay_grant IS NOT NULL AND expires>? LIMIT 1", (owner, time.time())).fetchone() is not None
 
-    def enqueue(self, profile, session, turn, kind, *, session_aliases=None):
+    def enqueue(self, profile, session, turn, kind, *, session_aliases=None, notification=None):
         from .push_crypto import seal
         now = time.time()
         signing_key = self.push_signing_key()
@@ -177,7 +179,7 @@ class Store:
                 destination = {"protocol": 1, "event_id": event, "device_id": device["id"], "kind": kind, "server_id": server_id,
                            "profile_id": profile, "session_id": session}
                 payload = {"event_id": event, "device_token": device["token"], "environment": device["environment"],
-                           "encrypted": seal(device["encryption_key"], signing_key, destination, now=now)}
+                           "encrypted": seal(device["encryption_key"], signing_key, destination, now=now, notification=notification)}
                 if device["relay_grant"]:
                     payload = {"event_id": event, "grant_id": device["relay_grant"], "encrypted": payload["encrypted"]}
                 db.execute("INSERT OR IGNORE INTO outbox (id,owner,device,payload) VALUES (?,?,?,?)",

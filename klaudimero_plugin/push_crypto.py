@@ -35,16 +35,33 @@ def context(recipient_id, event_id):
     return DOMAIN + recipient_id.encode("ascii") + b"\x00" + event_id.encode("ascii")
 
 
-def seal(public_key, signing_key, destination, now=None):
+def seal(public_key, signing_key, destination, now=None, notification=None):
     recipient = decode_public_key(public_key)
     recipient_id = key_id(recipient)
     info = context(recipient_id, destination["event_id"])
     issued = int(time.time() if now is None else now)
-    payload = json.dumps({"destination": destination, "issued_at": issued, "expires_at": issued + 3600},
-                         ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    signature = signing_key.sign(info + payload)
-    signed = json.dumps({"payload": base64.b64encode(payload).decode(), "signature": base64.b64encode(signature).decode()},
-                        separators=(",", ":")).encode()
+    content = {"destination": destination, "issued_at": issued, "expires_at": issued + 3600}
+    if notification is not None:
+        if (not isinstance(notification, dict) or set(notification) != {"title", "body"}
+                or any(not isinstance(notification[k], str) or not notification[k].strip() for k in notification)
+                or len(notification["title"].encode()) > 96 or len(notification["body"].encode()) > 512):
+            raise Problem(422, "invalid_notification_preview")
+        content["notification"] = dict(notification)
+    while True:
+        payload = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        signature = signing_key.sign(info + payload)
+        signed = json.dumps({"payload": base64.b64encode(payload).decode(), "signature": base64.b64encode(signature).decode()},
+                            separators=(",", ":")).encode()
+        if len(signed) + 48 <= 2400:
+            break
+        if "notification" not in content:
+            raise Problem(422, "push_payload_too_large")
+        body = content["notification"]["body"]
+        if len(body.encode()) <= 32:
+            content.pop("notification")
+        else:
+            from .notification_preview import bounded
+            content["notification"]["body"] = bounded(body, max(32, len(body.encode()) * 3 // 4))
     # A new HPKE context/ephemeral key for every event. Persist the sealed packet
     # before delivery; retries reuse exactly those bytes, never reseal an event.
     encrypted = SUITE.encrypt(signed, recipient, info=info)

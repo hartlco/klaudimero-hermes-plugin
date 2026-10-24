@@ -1,4 +1,4 @@
-"""Klaudimero's local delivery channel; chat content never goes through APNs."""
+"""Klaudimero's local delivery channel; reply previews are encrypted before reaching APNs."""
 import asyncio
 import hashlib
 import json
@@ -115,14 +115,17 @@ def drain(store):
                             db.release_session_turn_lease(sid, holder)
                     # If the process died after append, the marker above prevents
                     # another transcript row on recovery, including compression.
+                    from .notification_preview import preview
+                    notification = preview(row["content"])
                     with store.connection() as conn:
-                        conn.execute("UPDATE channel_messages SET status='written',session_id=?,content='' WHERE id=?", (sid, row["id"]))
+                        conn.execute("UPDATE channel_messages SET status='written',session_id=?,content='',notification_preview=? WHERE id=?", (sid, json.dumps(notification), row["id"]))
                 else:
                     sid = row["session_id"]
                     lineage = db.get_compression_lineage(sid)
-                store.enqueue(profile, sid, "channel:" + row["id"], "reply_ready", session_aliases=lineage)
+                    notification = json.loads(row["notification_preview"]) if row["notification_preview"] else None
+                store.enqueue(profile, sid, "channel:" + row["id"], "reply_ready", session_aliases=lineage, notification=notification)
                 with store.connection() as conn:
-                    conn.execute("UPDATE channel_messages SET status='notified',error=NULL WHERE id=?", (row["id"],))
+                    conn.execute("UPDATE channel_messages SET status='notified',error=NULL,notification_preview=NULL WHERE id=?", (row["id"],))
             except Exception as error:
                 # Queue text and delivery metadata stay in private storage. No
                 # content, tokens, profile names or raw exceptions are logged.

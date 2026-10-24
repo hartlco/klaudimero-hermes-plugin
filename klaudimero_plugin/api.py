@@ -147,7 +147,7 @@ def capabilities(response: Response, account=Depends(owner)):
             "lifecycle": {"protocol": 1},
             "updater": {"protocol": 1, "python_dependencies": ["cryptography>=50,<51"]},
             "avatar_revision": store.avatar_revision(account),
-            "push_content": "encrypted", "push_encryption": ALGORITHM,
+            "push_content": "encrypted", "push_preview": 1, "push_encryption": ALGORITHM,
             "push_signing_key": store.push_signing_public_key, "device_lease_days": 30}
 
 
