@@ -1,8 +1,8 @@
-# Version0.4.1 verification
+# Version 0.4.1 verification
 
-46 Python tests pass against real Hermes0.22.4 and0.22.5. The new regression executes Hermes's actual `publish_plugin` dependency-consent gate: a forced HTTP install defaults consent to false and refuses publication; explicit approval reaches PM admission. This corrects the previous native fixture's stand-in installer, which did not exercise that gate. The channel tests from0.4.0 still pass.
+46 Python tests pass against real Hermes 0.22.4 and 0.22.5. The new regression executes Hermes's actual `publish_plugin` dependency-consent gate: a forced HTTP install defaults consent to false and refuses publication; explicit approval reaches PM admission. This corrects the previous native fixture's stand-in installer, which did not exercise that gate. The channel tests from 0.4.0 still pass.
 
-Updater tests verify explicit dependency consent, fixed public repository, named-profile validation, `--force --yes-deps`, exact installed Git SHA, owner isolation, stable receipt retries and failure without leaking CLI output. A refusal or unverifiable tree never reports successful installation. The CLI and final PM execution are substituted in tests; actual remote installation is not claimed. Native app evidence is recorded with app0.2.4. No Apple key or production data is used.
+Updater tests verify explicit dependency consent, fixed public repository, named-profile validation, `--force --yes-deps`, exact installed Git SHA, owner isolation, stable receipt retries and failure without leaking CLI output. A refusal or unverifiable tree never reports successful installation. The CLI and final PM execution are substituted in tests; actual remote installation is not claimed. Native app evidence is recorded with app 0.2.4. No Apple key or production data is used.
 
 ---
 
