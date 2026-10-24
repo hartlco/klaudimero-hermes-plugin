@@ -1,5 +1,4 @@
 """Hermes-mounted API. The host authenticates every route before dispatch."""
-from functools import lru_cache
 import hashlib
 import json
 import re
@@ -14,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from . import VERSION, PROTOCOL
 from .contracts import Problem, appearance, identifier, request_id
-from .delivery import ManagedRelay, Relay, Sender
+from .delivery import ManagedRelay, Relay, service
 from .storage import Store
 
 REPOSITORY = "https://github.com/hartlco/klaudimero-hermes-plugin"
@@ -30,12 +29,6 @@ class PrivateRoute(APIRoute):
         return handle
 
 router = APIRouter(route_class=PrivateRoute)
-
-
-@lru_cache(maxsize=8)
-def service(directory):
-    store = Store(directory)
-    return store, Sender(store)
 
 
 def services():
@@ -95,6 +88,7 @@ class Device(Body):
 class ProfileSetup(Body):
     profile_ids: list[str] = Field(max_length=16)
     revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    update: bool = False
 
 
 @router.get("/capabilities")
@@ -107,6 +101,7 @@ def capabilities(response: Response, account=Depends(owner)):
     return {"protocol": PROTOCOL, "version": VERSION, "server_id": store.server_id,
             "account_id": account, "avatar_sync": True, "push_relay_configured": Relay().legacy_configured or store.has_managed_grant(account),
             "push_relay": {"protocol": 2, "url": RELAY_URL},
+            "channel": {"platform": "klaudimero", "default_target": "bot", "delivery": "bot_chat"},
             "avatar_revision": store.avatar_revision(account),
             "push_content": "encrypted", "push_encryption": ALGORITHM,
             "push_signing_key": store.push_signing_public_key, "device_lease_days": 30}
@@ -167,8 +162,8 @@ def remove_device(device_id: str, response: Response, account=Depends(owner)):
 def enable_profiles(body: ProfileSetup, account=Depends(owner)):
     """Use Hermes's public CLI to install/enable this exact package for named bots.
 
-    No shell, arbitrary repository, overwrite flag, or gateway restart is accepted.
-    A partially completed call can be resumed without touching existing packages.
+    No shell, arbitrary repository, or gateway restart is accepted. Replacing a
+    pinned package requires the app's explicit update confirmation (update=True).
     """
     from hermes_cli.profiles import get_profile_dir, list_profile_names
     executable = shutil.which("hermes")
@@ -181,7 +176,7 @@ def enable_profiles(body: ProfileSetup, account=Depends(owner)):
     for profile in dict.fromkeys(body.profile_ids):
         manifest = get_profile_dir(profile) / "plugins" / "klaudimero" / "plugin.yaml"
         installed = manifest.is_file()
-        if installed:
+        if installed and not body.update:
             import yaml
             try:
                 current = yaml.safe_load(manifest.read_text())
@@ -192,7 +187,12 @@ def enable_profiles(body: ProfileSetup, account=Depends(owner)):
                 results.append({"profile_id": profile, "enabled": False})
                 continue
         arguments = [executable, "-p", profile, "plugins"]
-        arguments += ["enable", "klaudimero"] if installed else ["install", REPOSITORY, "--ref", body.revision, "--enable"]
+        if body.update or not installed:
+            arguments += ["install", REPOSITORY, "--ref", body.revision, "--enable"]
+            if body.update:
+                arguments += ["--force"]
+        else:
+            arguments += ["enable", "klaudimero"]
         try:
             result = subprocess.run(arguments, capture_output=True, timeout=120, check=False)
             results.append({"profile_id": profile, "enabled": result.returncode == 0})

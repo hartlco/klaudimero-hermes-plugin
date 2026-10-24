@@ -170,11 +170,14 @@ def test_old_token_failure_cannot_revoke_rotated_registration(tmp_path):
 def test_hook_registration_is_network_free_and_forward_compatible():
     class Context:
         profile_name = "default"
+        def register_platform(self, **kwargs):
+            self.platform = kwargs
         def register_hook(self, name, callback):
             self.name, self.callback = name, callback
         def on_unload(self, callback):
             self.unload = callback
     ctx = Context(); register(ctx)
+    assert ctx.platform["name"] == "klaudimero" and not ctx.platform["required_env"]
     assert ctx.name == "on_session_end"
     ctx.callback(completed=False, future_field="ignored")
     ctx.unload()

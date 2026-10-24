@@ -21,6 +21,8 @@ def normalize(profile, payload):
 
 
 def register(ctx):
+    from .channel import register as register_channel
+    register_channel(ctx)
     sender = None
 
     def on_session_end(**payload):

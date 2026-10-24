@@ -43,6 +43,10 @@ class Store:
                     payload TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
                     next_attempt REAL NOT NULL DEFAULT 0, lease REAL NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS relay_revocations (grant_id TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS channel_messages (id TEXT PRIMARY KEY, profile TEXT NOT NULL,
+                    content TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL,
+                    session_id TEXT, created REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt REAL NOT NULL DEFAULT 0, error TEXT);
             """)
             db.execute("INSERT OR IGNORE INTO metadata VALUES ('server_id',?)", (str(uuid.uuid4()),))
             if "encryption_key" not in {r[1] for r in db.execute("PRAGMA table_info(devices)")}:
@@ -154,14 +158,16 @@ class Store:
         with self.connection() as db:
             return db.execute("SELECT 1 FROM devices WHERE owner=? AND relay_grant IS NOT NULL AND expires>? LIMIT 1", (owner, time.time())).fetchone() is not None
 
-    def enqueue(self, profile, session, turn, kind):
+    def enqueue(self, profile, session, turn, kind, *, session_aliases=None):
         from .push_crypto import seal
         now = time.time()
         signing_key = self.push_signing_key()
         server_id = self.server_id
         with self.connection() as db:
             for device in db.execute("SELECT * FROM devices WHERE expires>? AND encryption_key IS NOT NULL", (now,)).fetchall():
-                if {"profile_id": profile, "session_id": session} not in json.loads(device["sessions"]):
+                candidates = set(session_aliases or ()) | {session}
+                if not any(s.get("profile_id") == profile and s.get("session_id") in candidates
+                           for s in json.loads(device["sessions"])):
                     continue
                 event = hashlib.sha256(json.dumps([device["owner"], device["id"], profile, session, turn, kind]).encode()).hexdigest()
                 destination = {"protocol": 1, "event_id": event, "device_id": device["id"], "kind": kind, "server_id": server_id,

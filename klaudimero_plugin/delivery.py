@@ -4,11 +4,19 @@ import logging
 import os
 import threading
 import time
+from functools import lru_cache
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 log = logging.getLogger("klaudimero")
+
+
+@lru_cache(maxsize=8)
+def service(directory):
+    from .storage import Store
+    store = Store(directory)
+    return store, Sender(store)
 
 
 class ManagedRelay:
@@ -111,6 +119,8 @@ class Sender:
     def run(self):
         while not self.stop.is_set():
             try:
+                from .channel import drain
+                drain(self.store)
                 if getattr(self.relay, "managed", None):
                     for grant in self.store.pending_revocations():
                         try:

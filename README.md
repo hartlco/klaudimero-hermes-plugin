@@ -3,14 +3,15 @@
 Optional server support for the Klaudimero iPhone, iPad and native Mac app:
 
 - Sync editable chick avatars, symbol choices and imported bot photos between devices signed in to the same Hermes account.
+- Deliver scheduled job results and proactive messages into each bot’s main chat through the **Klaudimero** Hermes channel.
 - Register device-scoped notification grants and enrolled chats for reply-ready/error notifications.
 - Encrypt and authenticate notification events for each device before forwarding through a separately operated APNs relay. **The Hermes plugin never needs an Apple `.p8` key.**
 
-The app continues to chat without this plugin. The plugin registers no model tools, injects no prompts and never patches Hermes core. The code targets the documented plugin hook and authenticated dashboard-router surfaces of **Hermes v0.22.5**.
+The app continues to chat without this plugin. The plugin registers a local delivery channel and notification hooks, adds no model tools or prompts, and never patches Hermes core. The code targets the documented plugin hook and authenticated dashboard-router surfaces of **Hermes v0.22.5**.
 
 ## Install
 
-In Klaudimero, open **More → Settings → Klaudimero plugin → Install plugin**. Review the source and confirm. The app uses Hermes's own authenticated plugin installer with an exact reviewed Git commit; it never runs an agent prompt to install code. The plugin's setup endpoint uses the public Hermes CLI to enable the same package for named profiles. It never forces an overwrite of modified packages or restarts a running gateway automatically.
+In Klaudimero, open **More → Settings → Klaudimero plugin → Install plugin**. Review the source and confirm. The app uses Hermes's own authenticated plugin installer with an exact reviewed Git commit; it never runs an agent prompt to install code. The plugin's setup endpoint uses the public Hermes CLI to enable the same package for named profiles. Fresh installation never overwrites an existing package. The separate **Update plugin** confirmation can replace this plugin's pinned code for all known bots; icon and notification data stays outside the checkout. Gateways are never restarted automatically.
 
 Manual installation:
 
@@ -28,13 +29,25 @@ Hermes mounts `dashboard/plugin_api.py` under `/api/plugins/klaudimero` behind i
 
 Icon records are partitioned by a digest of Hermes's verified dashboard identity and by profile ID. A local-token-only dashboard uses the digest of its host-validated owner token. There is no body parameter that lets a client select another account. Keep the same sign-in method/account on devices that should share settings. Unrecognized identity contexts fail closed; the plugin is not an unauthenticated standalone API.
 
-The database holds full editable icon settings, optional photo bytes, revision numbers, mutation receipts, notification grants, enrolled profile/session IDs, and a generic notification outbox. It contains no conversation text or dashboard passwords. Data is protected by filesystem permissions, not separately encrypted against the Hermes OS user. Keep it with normal private Hermes backups. Updating plugin code leaves it intact.
+The database holds full editable icon settings, optional photo bytes, revision numbers, mutation receipts, notification grants, enrolled profile/session IDs, a generic notification outbox, and pending channel delivery text. Queued text is cleared after it is saved to the native Hermes transcript. No dashboard passwords are stored. Data is protected by filesystem permissions, not separately encrypted against the Hermes OS user. Keep it with normal private Hermes backups. Updating plugin code leaves it intact.
 
 ## Icon synchronization
 
 Writes carry `expected_revision` and a UUID `request_id`. SQLite commits the icon and retry receipt in one transaction. Replaying the identical request returns its original result; changing a request under an existing UUID is refused. Concurrent/stale edits receive `409 avatar_revision_conflict`; the app keeps the local choice and offers **Use server icon** or **Keep this device's icon**. It never silently overwrites a newer remote edit.
 
 On initial migration, an existing server icon wins over an unmodified old device-only preference. Otherwise, the local preference is uploaded with expected revision zero. Explicit new edits, offline changes and in-flight saves remain protected. The lightweight capabilities response includes an aggregate icon revision, so unchanged photos are not downloaded every polling interval.
+
+## Delivery channel
+
+Plugin **0.4.0** registers **Klaudimero** in Hermes’s web **Channels** page and scheduled-job delivery picker. The channel becomes available when this updated plugin is loaded in the dashboard and the relevant profile gateways. Existing 0.3.0 installations must update the package and restart those processes; DNS and relay settings do not control channel discovery.
+
+No channel token, URL or Apple credential is required. The channel’s default destination is `bot`, meaning the running job/agent’s own profile. Explicit targets are `bot:default` or `bot:<profile-id>`; the gateway’s channel directory lists these bot targets. Choose **Klaudimero** as a job’s delivery channel, or use `send_message` with platform `klaudimero` and target `bot:<profile-id>` for proactive text. Open the target bot in Klaudimero once so its canonical **Bot Chat** exists. Missing, unknown and archived main chats return an error rather than claiming successful delivery.
+
+Live gateway delivery and standalone cron delivery both persist the text in the existing main chat as an assistant message. The app’s normal history refresh displays it without restarting. This does not run another model turn. The plugin uses Hermes’s shared SessionDB registry and public append/turn-lease APIs; it never writes Hermes SQL or takes over another active turn. Busy deliveries remain durably queued and preserve per-bot order. A worker resumes them after the current turn finishes; a stable platform message marker prevents another transcript row if the worker dies after append but before recording completion. This guarantees recovery of an accepted queue item, not exactly-once delivery across independent caller invocations without a stable delivery ID.
+
+The existing device enrollments receive an encrypted reply-ready event after the text is saved. Plaintext message content stays on Hermes; APNs receives only the existing encrypted generic event. Push opt-out does not disable delivery into chat. Queue text is kept privately until appended, then removed while its receipt/digest remains. Gateway workers and the dashboard/API sender resume pending work; an offline host resumes after it is running again. Keep the plugin data directory when updating.
+
+Text deliveries are supported, up to 256 KiB. The adapter rejects thread-specific or attachment-only sends. The channel worker currently requires a Linux/macOS Hermes host. Enabling/disabling the channel through Hermes preserves the explicit disabled setting. Native chat input continues through Hermes’s existing authenticated session API; this plugin opens no public inbound listener.
 
 ## Encrypted notifications
 
@@ -58,14 +71,16 @@ Managed sending uses device-issued grants and the Hermes host signing key. No sh
 
 ## Upgrading an existing pinned installation
 
-Version 0.3.0 adds automatic enrollment and requires relay 0.3.0 plus an updated app. Ordinary users do not configure a relay. Existing pinned plugins need this one-time package upgrade. Upgrade the app, relay and every profile's plugin, then restart the dashboard/gateways so an old worker cannot continue emitting v1 events. Existing v1.1 app installs are pinned; Hermes deliberately refuses an ordinary update of a pinned checkout. After reviewing and backing up any local code changes, move that pin with Hermes's documented command:
+Version 0.4.0 adds the delivery channel. Its push protocol stays compatible with relay 0.3.0; an existing working relay needs no update. Klaudimero 0.2.2 can already display these delivered messages. App 0.2.3 adds **Settings → Klaudimero plugin → Update plugin** and pins this release. Confirm that action, then restart the Hermes dashboard and relevant profile gateways. If the dashboard still serves the old API during setup, restart it first and run **Update plugin** once more to upgrade the named bots. Ordinary users do not configure a relay.
+
+Existing packages are pinned; Hermes deliberately refuses an ordinary update of a pinned checkout. **Update plugin** explicitly replaces the plugin code, including local edits; back those edits up first. It never bypasses Hermes's scan/capability decisions. Alternatively, move the pin using Hermes's documented CLI:
 
 ```sh
-hermes plugins install https://github.com/hartlco/klaudimero-hermes-plugin --force --ref <reviewed-0.3.0-commit> --enable
-hermes -p my-bot plugins install https://github.com/hartlco/klaudimero-hermes-plugin --force --ref <reviewed-0.3.0-commit> --enable
+hermes plugins install https://github.com/hartlco/klaudimero-hermes-plugin --force --ref <reviewed-0.4.0-commit> --enable
+hermes -p my-bot plugins install https://github.com/hartlco/klaudimero-hermes-plugin --force --ref <reviewed-0.4.0-commit> --enable
 ```
 
-The app never forces that overwrite or bypasses Hermes's scan/capability decisions. Icon/device data is outside the checkout. New installations use the app's pinned installer. Hermes's package manager must admit the declared `cryptography>=50,<51` dependency; resolve any reported dependency conflict through Hermes rather than forcing incompatible core packages.
+Icon/device data is outside the checkout. New installations use the app's pinned installer. Hermes's package manager must admit the declared `cryptography>=50,<51` dependency; resolve any reported dependency conflict through Hermes rather than forcing incompatible core packages.
 
 ## Develop and verify
 
@@ -76,5 +91,11 @@ python3.14 -m venv .venv
 hermes plugins doctor . --ci
 ```
 
-Tests cover account isolation, complete icon/photo/symbol persistence, compare-and-swap races and receipt retries, device proof, host-scoped grants, token rotation/revocation, scoped enrollments, deduplicated hooks, authenticated relay delivery and synthetic-key ES256/APNs packet construction. No real Apple key or phone is needed for those tests. Hardware delivery requires the separately configured relay, push-entitled app, correctly signed notification extension and matching shared Keychain entitlement. No GitHub Actions workflow is included.
+Tests cover account isolation, complete icon/photo/symbol persistence, compare-and-swap races and receipt retries, device proof, host-scoped grants, token rotation/revocation, scoped enrollments, deduplicated hooks, authenticated relay delivery and synthetic-key ES256/APNs packet construction. Set `HERMES_TEST_SOURCE` to a real supported Hermes checkout to also run channel integration tests. These exercise actual SessionDB guards, named profiles, compression, crash recovery, the platform adapter, dashboard catalog discovery, and cron delivery targets:
+
+```sh
+HERMES_TEST_SOURCE=/path/to/hermes-agent .venv/bin/pytest -q --import-mode=importlib
+```
+
+No real Apple key or phone is needed for those tests. Hardware delivery requires the separately configured relay, push-entitled app, correctly signed notification extension and matching shared Keychain entitlement. No GitHub Actions workflow is included.
 

@@ -1,3 +1,13 @@
+# Version 0.4.0 verification
+
+43 Python tests pass on Python3.14 against real Hermes v0.22.5 (`bf0203a794a07aac3ff764972ab9087baa4e4f4e`). Runtime-backed Plugin Doctor reports no findings: discovery, manifest, import and registration succeed with network blocked during registration. No model tools or prompts are added.
+
+Channel tests use the actual PlatformEntry, gateway adapter, dashboard channel catalog, gateway config loader, cron delivery targets and standalone send dispatcher. Both live gateway and standalone cron sends append to real SessionDB main chats, including named profiles and compression tips. Public turn leases defer busy chats; FIFO retries and process-death marker recovery avoid overtaking and duplicate transcript rows. Unknown/archived chats and unsupported threads/attachments fail honestly. Explicit channel disable is preserved. Actual HPKE outbox packets contain no delivery text and honor profile/session enrollment, including compression ancestors. Named-profile pin replacement requires an explicit update flag and a fixed public repository.
+
+The existing33 icon/enrollment/encryption/relay tests still pass. This release changes the Hermes plugin and app installer; relay0.3.0 stays compatible and does not need redeployment. Native app verification is recorded with the private app release. Tests use temporary homes, profiles, database files and synthetic keys; no production transcripts or Apple key are touched. Physical-device Apple delivery is not claimed by this test suite. GitHub Actions remains absent.
+
+---
+
 # Version 0.3.0 verification
 
 33 Python tests pass, including device ownership proof, rejected wrong-owner/proof/signature requests, recipient/host scoping, revocation and expired grants, no resurrection of revoked UUIDs, token rotation and stable delivery deduplication, retry after uncertain APNs challenge dispatch, body limits and registration throttling. Managed plugin API tests verify that Hermes stores a grant and content public key without an APNs token/environment, retires replacement grants safely and refuses unverified grants. Existing icon and HPKE tests remain covered.
