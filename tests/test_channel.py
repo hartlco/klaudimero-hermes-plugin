@@ -174,6 +174,13 @@ def test_real_channels_catalog_cron_home_and_gateway_adapter(homes, monkeypatch)
         result = asyncio.run(send_message_tool._send_to_platform(p, config.platforms[p], "bot:work", "Cron dispatcher update"))
         assert result.get("success"), result
         assert db.get_messages(sid)[-1]["content"] == "Cron dispatcher update"
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+        assert send_message_tool._resolve_tool_target("klaudimero:new:work") == ("klaudimero", "new:work", None, None)
+        import json
+        routed = json.loads(send_message_tool.send_message_tool({"action":"send", "target":"klaudimero:new:work",
+                            "message":"Prepare the launch review\n\nResolve the remaining decisions."}))
+        assert routed.get("success"), routed
+        assert db.get_session_by_title("Prepare the launch review") is not None
     finally:
         current = platform_registry.snapshot_registration("klaudimero", scope=None)
         platform_registry.restore_registration("klaudimero", current, previous, scope=None)
@@ -369,3 +376,130 @@ def test_channel_retry_keeps_its_exact_preview_after_transcript_moves_on(homes, 
     with store.connection() as conn:
         row=conn.execute('SELECT * FROM channel_messages').fetchone()
         assert row['status']=='notified' and row['notification_preview'] is None
+
+
+def test_new_delivery_creates_a_visible_titled_chat_in_the_selected_profile(homes):
+    _, dbs = homes
+    result = channel.submit("new:work", "Prepare for tomorrow's meeting\n\nReview the three open decisions.", metadata={"delivery_id": "proactivity-1"})
+    assert result["success"]
+    with Store().connection() as conn:
+        sid = conn.execute("SELECT session_id FROM new_chat_messages").fetchone()[0]
+    db, main = dbs["work"]
+    assert sid != main
+    session = db.get_session(sid)
+    assert session["title"] == "Prepare for tomorrow's meeting"
+    assert session["source"] == "delivery" and not session["hidden"]
+    assert db.get_messages(sid)[0]["content"] == "Review the three open decisions."
+    assert len(db.get_messages(main)) == 2
+    assert len(dbs["default"][0].get_messages(dbs["default"][1])) == 2
+
+
+def test_older_workers_cannot_claim_a_queued_new_chat_delivery(homes, monkeypatch):
+    with monkeypatch.context() as pending:
+        pending.setattr(channel, "drain", lambda store: None)
+        result = channel.submit("new", "Keep this in its own chat\n\nA queued suggestion.")
+    with Store().connection() as conn:
+        assert conn.execute("SELECT count(*) FROM channel_messages WHERE status!='notified'").fetchone()[0] == 0
+        assert conn.execute("SELECT status FROM new_chat_messages WHERE id=?", (result["message_id"],)).fetchone()[0] == "queued"
+    channel.drain(Store())
+    with Store().connection() as conn:
+        assert conn.execute("SELECT status FROM new_chat_messages WHERE id=?", (result["message_id"],)).fetchone()[0] == "notified"
+
+
+def test_new_chat_receipt_and_crash_recovery_do_not_create_duplicate_chats(homes):
+    _, dbs = homes
+    content = "Close the travel planning loop\n\nConfirm the remaining booking."
+    response = channel.submit("new", content, metadata={"delivery_id": "same-request"})
+    repeated = channel.submit("new", content, metadata={"delivery_id": "same-request"})
+    assert response == repeated
+    with Store().connection() as conn:
+        sid = conn.execute("SELECT session_id FROM new_chat_messages").fetchone()[0]
+        conn.execute("UPDATE new_chat_messages SET status='queued',content=?,next_attempt=0", (content,))
+    channel.drain(Store())
+    db, _ = dbs["default"]
+    assert len(db.get_messages(sid)) == 1
+    with Store().connection() as conn:
+        assert conn.execute("SELECT count(*) FROM new_chat_messages").fetchone()[0] == 1
+    second = channel.submit("new", content)
+    with Store().connection() as conn:
+        sid2 = conn.execute("SELECT session_id FROM new_chat_messages WHERE id=?", (second["message_id"],)).fetchone()[0]
+    assert sid2 != sid
+    assert db.get_session_title(sid2).startswith("Close the travel planning loop")
+    assert db.get_session_title(sid2) != db.get_session_title(sid)
+
+
+def test_new_chat_push_opens_the_new_chat_only_for_the_same_bot_recipients(homes):
+    import base64, json
+    from cryptography.hazmat.primitives.asymmetric import x25519
+    from klaudimero_plugin.push_crypto import SUITE, context
+    _, dbs = homes
+    store = Store(); _, main = dbs["work"]
+    recipient = x25519.X25519PrivateKey.generate()
+    public = base64.b64encode(recipient.public_key().public_bytes_raw()).decode()
+    device = str(uuid.uuid4())
+    store.register_device("owner", device, "", "", [{"profile_id": "work", "session_id": main}], public, str(uuid.uuid4()))
+    for profile, sid in [("default", main), ("work", "unrelated-chat")]:
+        store.register_device("owner", str(uuid.uuid4()), "", "", [{"profile_id": profile, "session_id": sid}], public, str(uuid.uuid4()))
+    result = channel.submit("new:work", "A private follow-up title\n\nPrivate suggestion content")
+    with store.connection() as conn:
+        sid = conn.execute("SELECT session_id FROM new_chat_messages WHERE id=?", (result["message_id"],)).fetchone()[0]
+        assert conn.execute("SELECT count(*) FROM outbox").fetchone()[0] == 1
+    envelope = json.loads(store.claim()["payload"])
+    assert "Private suggestion" not in json.dumps(envelope)
+    encrypted = envelope["encrypted"]
+    info = context(encrypted["key_id"], encrypted["event_id"])
+    signed = json.loads(SUITE.decrypt(base64.b64decode(encrypted["ciphertext"]), recipient, info=info))
+    payload = base64.b64decode(signed["payload"])
+    store.push_signing_key().public_key().verify(base64.b64decode(signed["signature"]), info + payload)
+    content = json.loads(payload)
+    destination = content["destination"]
+    assert destination["session_id"] == sid and sid != main
+    assert destination["profile_id"] == "work" and destination["device_id"] == device
+    assert content["notification"] == {"title": "A private follow-up title", "body": "Private suggestion content"}
+
+
+def test_new_chat_retry_preserves_its_preview_after_another_message(homes, monkeypatch):
+    import json
+    _, dbs = homes
+    store = Store()
+    enqueue = Store.enqueue_delivery
+    with monkeypatch.context() as failing:
+        def fail(*args, **kwargs):
+            raise RuntimeError("Simulated interruption after writing the delivery chat")
+        failing.setattr(Store, "enqueue_delivery", fail)
+        channel.submit("new:work", "Resolve the open decisions\n\nConfirm the final booking.")
+    with store.connection() as conn:
+        row = conn.execute("SELECT * FROM new_chat_messages").fetchone()
+        sid = row["session_id"]
+        expected = {"title": "Resolve the open decisions", "body": "Confirm the final booking."}
+        assert row["status"] == "written" and row["content"] == ""
+        assert json.loads(row["notification_preview"]) == expected
+        conn.execute("UPDATE new_chat_messages SET next_attempt=0")
+    dbs["work"][0].append_message(sid, "assistant", "A later answer must not replace the original preview")
+    seen = []
+    def capture(self, *args, **kwargs):
+        seen.append(kwargs["notification"])
+        return enqueue(self, *args, **kwargs)
+    monkeypatch.setattr(Store, "enqueue_delivery", capture)
+    channel.drain(store)
+    assert seen == [expected]
+    with store.connection() as conn:
+        row = conn.execute("SELECT * FROM new_chat_messages").fetchone()
+        assert row["status"] == "notified" and row["notification_preview"] is None
+
+
+def test_new_chat_queue_without_preview_column_upgrades_without_losing_delivery(homes, monkeypatch):
+    store = Store()
+    with monkeypatch.context() as pending:
+        pending.setattr(channel, "drain", lambda store: None)
+        result = channel.submit("new", "Keep the existing delivery\n\nStill waiting to be sent.")
+    with store.connection() as conn:
+        conn.execute("ALTER TABLE new_chat_messages DROP COLUMN notification_preview")
+    upgraded = Store()
+    channel.drain(upgraded)
+    with upgraded.connection() as conn:
+        row = conn.execute("SELECT * FROM new_chat_messages WHERE id=?", (result["message_id"],)).fetchone()
+        assert row["status"] == "notified" and row["notification_preview"] is None
+    db, _ = homes[1]["default"]
+    assert db.get_session_title(row["session_id"]) == "Keep the existing delivery"
+    assert db.get_messages(row["session_id"])[0]["content"] == "Still waiting to be sent."

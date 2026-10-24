@@ -59,6 +59,21 @@ class Store:
                 db.execute("ALTER TABLE devices ADD COLUMN encryption_key TEXT")
             if "relay_grant" not in {r[1] for r in db.execute("PRAGMA table_info(devices)")}:
                 db.execute("ALTER TABLE devices ADD COLUMN relay_grant TEXT")
+            columns = {r[1] for r in db.execute("PRAGMA table_info(channel_messages)")}
+            if "target_kind" not in columns:
+                db.execute("ALTER TABLE channel_messages ADD COLUMN target_kind TEXT NOT NULL DEFAULT 'bot'")
+            if "notification_scope" not in columns:
+                db.execute("ALTER TABLE channel_messages ADD COLUMN notification_scope TEXT")
+            # Keep new-chat queue items invisible to older still-running workers.
+            db.execute("""CREATE TABLE IF NOT EXISTS new_chat_messages (id TEXT PRIMARY KEY, profile TEXT NOT NULL,
+                content TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL,
+                session_id TEXT, created REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt REAL NOT NULL DEFAULT 0, error TEXT, target_kind TEXT NOT NULL DEFAULT 'new', notification_scope TEXT, notification_preview TEXT)""")
+            if "notification_preview" not in {r[1] for r in db.execute("PRAGMA table_info(new_chat_messages)")}:
+                db.execute("ALTER TABLE new_chat_messages ADD COLUMN notification_preview TEXT")
+            fields = "id,profile,content,digest,status,session_id,created,attempts,next_attempt,error,target_kind,notification_scope,notification_preview"
+            db.execute(f"INSERT OR IGNORE INTO new_chat_messages ({fields}) SELECT {fields} FROM channel_messages WHERE target_kind='new'")
+            db.execute("DELETE FROM channel_messages WHERE target_kind='new'")
             if not db.execute("SELECT 1 FROM metadata WHERE key='encrypted_push_v2'").fetchone():
                 # Never replay plaintext events left by the previous release.
                 db.execute("UPDATE outbox SET payload='{}',next_attempt=1e30,lease=0")
@@ -165,14 +180,24 @@ class Store:
             return db.execute("SELECT 1 FROM devices WHERE owner=? AND relay_grant IS NOT NULL AND expires>? LIMIT 1", (owner, time.time())).fetchone() is not None
 
     def enqueue(self, profile, session, turn, kind, *, session_aliases=None, notification=None):
+        return self._enqueue(profile, session, turn, kind, set(session_aliases or ()) | {session}, notification)
+
+    def enqueue_delivery(self, profile, session, turn, enrolled_main_lineage, *, notification=None):
+        """Same channel recipients; the encrypted event opens its delivery chat.
+
+        This is explicit delivery routing, not a compression alias. Only devices
+        enrolled for the source bot's main chat receive the new-chat event.
+        """
+        return self._enqueue(profile, session, turn, "reply_ready", set(enrolled_main_lineage), notification)
+
+    def _enqueue(self, profile, session, turn, kind, subscribed_sessions, notification=None):
         from .push_crypto import seal
         now = time.time()
         signing_key = self.push_signing_key()
         server_id = self.server_id
         with self.connection() as db:
             for device in db.execute("SELECT * FROM devices WHERE expires>? AND encryption_key IS NOT NULL", (now,)).fetchall():
-                candidates = set(session_aliases or ()) | {session}
-                if not any(s.get("profile_id") == profile and s.get("session_id") in candidates
+                if not any(s.get("profile_id") == profile and s.get("session_id") in subscribed_sessions
                            for s in json.loads(device["sessions"])):
                     continue
                 event = hashlib.sha256(json.dumps([device["owner"], device["id"], profile, session, turn, kind]).encode()).hexdigest()

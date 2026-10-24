@@ -106,3 +106,10 @@ HERMES_TEST_SOURCE=/path/to/hermes-agent .venv/bin/pytest -q --import-mode=impor
 
 No real Apple key or phone is needed for those tests. Hardware delivery requires the separately configured relay, push-entitled app, correctly signed notification extension and matching shared Keychain entitlement. No GitHub Actions workflow is included.
 
+## New titled delivery chats (0.5)
+
+`hermes send --to klaudimero:new` creates a visible chat for that delivery in the current profile; `new:<profile>` selects a named bot. The first line is the title, followed by a blank line and the message body. Bot Chat remains the default for existing deliveries. The public channel configuration advertises `extra.proactivity_delivery = {version: 1, new_chat_target: "new"}`, so Proactivity can offer its New chat for each suggestion option without importing this plugin.
+
+Each accepted queue item uses a stable new-chat identity and a message marker, preserving recovery across crashes and compression. A repeated delivery ID cannot create another chat; a new caller invocation without a stable ID remains a distinct delivery. Existing main-chat subscribers for that bot receive the notification, with the encrypted session route set to the new chat. Other bots and unrelated chat enrollments receive nothing. This explicit delivery scope is separate from compression aliases. The app's existing push opt-out, keys and grants remain authoritative. Chat titles and suggestion bodies stay in local Hermes history and are never added as plaintext APNs content.
+
+The new sessions use source `delivery`, allowing proactive source readers to exclude generated suggestions and avoid feedback loops. Existing main-chat behavior and device registration APIs remain compatible.

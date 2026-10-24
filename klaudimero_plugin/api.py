@@ -143,7 +143,7 @@ def capabilities(response: Response, account=Depends(owner)):
     return {"protocol": PROTOCOL, "version": VERSION, "server_id": store.server_id,
             "account_id": account, "avatar_sync": True, "push_relay_configured": Relay().legacy_configured or store.has_managed_grant(account),
             "push_relay": {"protocol": 2, "url": RELAY_URL},
-            "channel": {"platform": "klaudimero", "default_target": "bot", "delivery": "bot_chat"},
+            "channel": {"platform": "klaudimero", "default_target": "bot", "delivery": "bot_chat", "new_chat_target": "new"},
             "lifecycle": {"protocol": 1},
             "updater": {"protocol": 1, "python_dependencies": ["cryptography>=50,<51"]},
             "avatar_revision": store.avatar_revision(account),
